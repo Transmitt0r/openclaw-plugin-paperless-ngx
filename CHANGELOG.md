@@ -3,7 +3,21 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.1.3] - Unreleased
+## [0.2.0] - Unreleased
+
+- **Breaking:** remove `paperless_list_documents`' `is_in_inbox` filter.
+  It was really just a special case of `tag_id` scoped to whichever tag
+  happens to be the inbox tag, which baked one specific workflow's concept
+  into an otherwise generic, API-mirroring tool. Resolve the inbox tag's
+  id via `paperless_list_tags` (`is_inbox_tag: true`) and pass it as
+  `tag_id` instead -- the bundled paperless-ingest skill already does
+  this in its pre-flight step.
+- Bundle two example skills (`skills/paperless-search`,
+  `skills/paperless-ingest`) via the manifest's `skills` field, so they
+  install automatically alongside the plugin instead of needing manual
+  deployment into an OpenClaw workspace.
+
+## [0.1.3] - 2026-07-20
 
 - Actually resolve `apiToken` when it's a SecretRef. 0.1.2 accepted a
   SecretRef at config-validation time (fixing `apiToken: must be string`)

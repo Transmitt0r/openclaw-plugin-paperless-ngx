@@ -51,7 +51,7 @@ openclaw config set plugins.entries.paperless-ngx.config.apiToken \
 
 | Tool | Description |
 | --- | --- |
-| `paperless_list_documents` | Search/filter documents (full-text search, correspondent, document type, tag, inbox status, date range, ordering, pagination). Results include OCR content. |
+| `paperless_list_documents` | Search/filter documents (full-text search, correspondent, document type, tag, date range, ordering, pagination). Results include OCR content. |
 | `paperless_get_document` | Fetch a single document by id. |
 | `paperless_update_document` | Patch a document's title, correspondent, document type, tags, or created date. Never touches `storage_path`. |
 | `paperless_list_tags` | List tags, optionally filtered by name. |
@@ -62,6 +62,19 @@ openclaw config set plugins.entries.paperless-ngx.config.apiToken \
 | `paperless_create_document_type` | Create a new document type. |
 
 There's deliberately no delete tool in this first pass.
+
+## Skills
+
+The plugin also bundles two example skills (`skills/`) that OpenClaw picks up automatically once
+it's installed:
+
+- **paperless-search** — on-demand document search ("find my car insurance policy")
+- **paperless-ingest** — inbox triage: read OCR, assign correspondent/type/tags/title/date, remove
+  the inbox tag. Can run on a schedule (e.g. heartbeat) or on demand.
+
+These are starting points, not fixed behavior — the title convention, legal-suffix list, safety
+rules, etc. are all easy to adapt; copy `skills/paperless-ingest/SKILL.md` into your own workspace
+and edit it if the defaults don't fit.
 
 ## Development
 

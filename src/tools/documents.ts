@@ -37,9 +37,6 @@ const listDocumentsParams = Type.Object({
   tag_id: Type.Optional(
     Type.Integer({ description: "Only return documents carrying this tag id." }),
   ),
-  is_in_inbox: Type.Optional(
-    Type.Boolean({ description: "Filter to (or exclude) documents still tagged as inbox." }),
-  ),
   title_contains: Type.Optional(Type.String({ description: "Case-insensitive title substring." })),
   created_from: Type.Optional(
     Type.String({ description: "Only documents with created date >= this ISO date (YYYY-MM-DD)." }),
@@ -76,7 +73,6 @@ export function createListDocumentsTool(client: PaperlessClient): AnyAgentTool {
               correspondent__id: params.correspondent_id,
               document_type__id: params.document_type_id,
               tags__id: params.tag_id,
-              is_in_inbox: params.is_in_inbox,
               title__icontains: params.title_contains,
               created__date__gte: params.created_from,
               created__date__lte: params.created_to,
