@@ -1,0 +1,40 @@
+{
+  "id": "paperless-ngx",
+  "name": "paperless-ngx",
+  "description": "Tools for reading and updating documents in a paperless-ngx instance.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "required": ["baseUrl", "apiToken"],
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "format": "uri",
+        "description": "Base URL of the paperless-ngx instance, e.g. https://paperless.example.com"
+      },
+      "apiToken": {
+        "type": "string",
+        "description": "paperless-ngx API token"
+      }
+    }
+  },
+  "uiHints": {
+    "apiToken": {
+      "sensitive": true,
+      "label": "API token"
+    }
+  },
+  "contracts": {
+    "tools": [
+      "paperless_list_documents",
+      "paperless_get_document",
+      "paperless_update_document",
+      "paperless_list_tags",
+      "paperless_create_tag",
+      "paperless_list_correspondents",
+      "paperless_create_correspondent",
+      "paperless_list_document_types",
+      "paperless_create_document_type"
+    ]
+  }
+}

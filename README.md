@@ -1,0 +1,80 @@
+# openclaw-plugin-paperless-ngx
+
+An [OpenClaw](https://docs.openclaw.ai) plugin for [paperless-ngx](https://docs.paperless-ngx.com/).
+
+It registers a handful of generic agent tools over the paperless-ngx REST API — list/search
+documents, get a document, patch a document, and list/create tags, correspondents, and document
+types. The tools mirror the API rather than any particular workflow, so they're equally useful for
+ad-hoc lookups or for an agent doing multi-step triage (e.g. clearing an inbox).
+
+## Install
+
+```bash
+openclaw plugins install clawhub:transmitt0r/openclaw-plugin-paperless-ngx
+```
+
+Or for local development, point OpenClaw at a built copy of this repo.
+
+## Configure
+
+The plugin needs the base URL of your paperless-ngx instance and an API token
+(Settings → My Profile → API Token in paperless-ngx):
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "paperless-ngx": {
+        "config": {
+          "baseUrl": "https://paperless.example.com",
+          "apiToken": "your-api-token"
+        }
+      }
+    }
+  }
+}
+```
+
+## Tools
+
+| Tool | Description |
+| --- | --- |
+| `paperless_list_documents` | Search/filter documents (full-text search, correspondent, document type, tag, inbox status, date range, ordering, pagination). Results include OCR content. |
+| `paperless_get_document` | Fetch a single document by id. |
+| `paperless_update_document` | Patch a document's title, correspondent, document type, tags, or created date. Never touches `storage_path`. |
+| `paperless_list_tags` | List tags, optionally filtered by name. |
+| `paperless_create_tag` | Create a new tag. |
+| `paperless_list_correspondents` | List correspondents, optionally filtered by name. |
+| `paperless_create_correspondent` | Create a new correspondent. |
+| `paperless_list_document_types` | List document types, optionally filtered by name. |
+| `paperless_create_document_type` | Create a new document type. |
+
+There's deliberately no delete tool in this first pass.
+
+## Development
+
+```bash
+pnpm install
+pnpm run build
+pnpm run test
+pnpm run lint
+```
+
+### Regenerating API types
+
+`src/generated/paperless-schema.d.ts` is generated from your paperless-ngx instance's live OpenAPI
+schema via [openapi-typescript](https://openapi-ts.dev/), and consumed through
+[openapi-fetch](https://openapi-ts.dev/openapi-fetch/) for a fully typed client:
+
+```bash
+export PAPERLESS_URL=https://paperless.example.com
+export PAPERLESS_TOKEN=your-api-token
+pnpm run generate:types
+```
+
+Re-run this after upgrading paperless-ngx if you rely on newer filters or fields.
+
+Note: `openapi-typescript`'s codegen currently only supports TypeScript ^5.x, while this project
+builds against the latest TypeScript major. `generate:types` runs the generator through `pnpm dlx`
+in an isolated resolution so it gets a compatible TypeScript without downgrading the project's own
+devDependency.
