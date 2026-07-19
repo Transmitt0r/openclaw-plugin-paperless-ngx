@@ -19,6 +19,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+          registry-url: https://registry.npmjs.org
 
       - run: pnpm install --frozen-lockfile
 
@@ -26,10 +27,12 @@ jobs:
 
       - run: pnpm run test
 
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       # Publishing to ClawHub is a separate, manual step for now (`clawhub
-      # package publish transmitt0r/openclaw-plugin-paperless-ngx`) -- this
-      # job only gates the tag on a clean build/test pass and packages the
-      # verified output as a release artifact.
+      # package publish transmitt0r/openclaw-plugin-paperless-ngx`).
       - run: npm pack --pack-destination /tmp
 
       - uses: softprops/action-gh-release@v3
