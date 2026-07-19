@@ -1,6 +1,6 @@
 {
   "name": "@transmitt0r/openclaw-plugin-paperless-ngx",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenClaw plugin for paperless-ngx",
   "type": "module",
   "license": "MIT",
@@ -23,7 +23,9 @@
     "url": "git+https://github.com/Transmitt0r/openclaw-plugin-paperless-ngx.git"
   },
   "openclaw": {
-    "extensions": "./dist/index.js",
+    "extensions": [
+      "./dist/index.js"
+    ],
     "compat": {
       "openclaw": ">=2026.7.0"
     }
