@@ -4,6 +4,13 @@
   "description": "OpenClaw plugin for paperless-ngx",
   "type": "module",
   "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "paperless-ngx",
+    "paperless",
+    "document-management"
+  ],
   "engines": {
     "node": "^20.0.0 || ^22.0.0 || >=24.0.0"
   },
