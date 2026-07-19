@@ -3,7 +3,21 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.1.2] - Unreleased
+## [0.1.3] - Unreleased
+
+- Actually resolve `apiToken` when it's a SecretRef. 0.1.2 accepted a
+  SecretRef at config-validation time (fixing `apiToken: must be string`)
+  but never resolved it -- `api.pluginConfig.apiToken` arrives as the raw
+  `{source, provider, id}` object, not a string, since OpenClaw does not
+  pre-resolve plugin config despite the field being marked sensitive. That
+  object got template-stringified into the Authorization header
+  (`Token [object Object]`), which paperless-ngx rejected as "Token string
+  should not contain spaces" -- a genuinely confusing failure mode to
+  debug from the error message alone. `register()` is now async and calls
+  `resolveSecretRefValues` from `openclaw/plugin-sdk/secret-ref-runtime`
+  explicitly before constructing the HTTP client.
+
+## [0.1.2] - 2026-07-20
 
 - `apiToken` config now accepts a SecretRef object as well as a plain
   string (matches how other secret-capable bundled plugins, e.g. brave's

@@ -1,9 +1,12 @@
 import {
   buildJsonPluginConfigSchema,
   definePluginEntry,
+  type OpenClawPluginApi,
   type OpenClawPluginDefinition,
 } from "openclaw/plugin-sdk/plugin-entry";
-import { type Static, Type } from "typebox";
+import { isSecretRef } from "openclaw/plugin-sdk/secret-input";
+import { resolveSecretRefValues } from "openclaw/plugin-sdk/secret-ref-runtime";
+import { Type } from "typebox";
 import { createPaperlessClient } from "./client.js";
 import {
   createGetDocumentTool,
@@ -19,25 +22,19 @@ import {
   createListTagsTool,
 } from "./tools/taxonomy.js";
 
-// What register() actually receives at runtime: OpenClaw resolves any
-// SecretRef in config down to a plain string before handing it to plugin
-// code, so this stays strict even though the manifest-facing schema below
-// has to accept the unresolved SecretRef shape too.
-const runtimeConfigShape = Type.Object({
-  baseUrl: Type.String({
-    description: "Base URL of the paperless-ngx instance, e.g. https://paperless.example.com",
-  }),
-  apiToken: Type.String({ description: "paperless-ngx API token" }),
-});
-
-export type PaperlessPluginConfig = Static<typeof runtimeConfigShape>;
+export type PaperlessPluginConfig = {
+  baseUrl: string;
+  apiToken: string;
+};
 
 // Manifest-facing schema: apiToken accepts a plain string OR a SecretRef
 // object (e.g. `openclaw config set ... --ref-provider default --ref-source
 // env --ref-id PAPERLESS_TOKEN`), matching how other secret-capable bundled
 // plugins (e.g. brave's webSearch.apiKey) type their sensitive fields as
 // `["string", "object"]` so config validation doesn't reject an unresolved
-// ref at set-time.
+// ref at set-time. Despite the field being marked sensitive, OpenClaw does
+// NOT resolve it before handing config to register() -- that has to happen
+// explicitly, see resolveApiToken below.
 const configSchema = Type.Object({
   baseUrl: Type.String({
     description: "Base URL of the paperless-ngx instance, e.g. https://paperless.example.com",
@@ -46,6 +43,18 @@ const configSchema = Type.Object({
     description: "paperless-ngx API token, as a plain string or a SecretRef object",
   }),
 });
+
+async function resolveApiToken(api: OpenClawPluginApi, value: unknown): Promise<string> {
+  if (!isSecretRef(value)) {
+    return value as string;
+  }
+  const resolved = await resolveSecretRefValues([value], { config: api.config });
+  const [resolvedValue] = resolved.values();
+  if (typeof resolvedValue !== "string") {
+    throw new Error("paperless-ngx: apiToken SecretRef did not resolve to a string");
+  }
+  return resolvedValue;
+}
 
 const entry: OpenClawPluginDefinition = definePluginEntry({
   id: "paperless-ngx",
@@ -56,8 +65,15 @@ const entry: OpenClawPluginDefinition = definePluginEntry({
   configSchema: buildJsonPluginConfigSchema(
     configSchema as unknown as Parameters<typeof buildJsonPluginConfigSchema>[0],
   ),
-  register(api) {
-    const config = api.pluginConfig as PaperlessPluginConfig;
+  // definePluginEntry types register() as returning void, but that's the
+  // standard TS accommodation for fire-and-forget async handlers -- the
+  // host awaits it before considering the plugin loaded.
+  async register(api) {
+    const rawConfig = api.pluginConfig as { baseUrl: string; apiToken: unknown };
+    const config: PaperlessPluginConfig = {
+      baseUrl: rawConfig.baseUrl,
+      apiToken: await resolveApiToken(api, rawConfig.apiToken),
+    };
     const client = createPaperlessClient(config);
 
     api.registerTool(createListDocumentsTool(client));
