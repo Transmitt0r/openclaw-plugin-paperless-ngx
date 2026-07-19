@@ -1,4 +1,4 @@
-name: Release
+name: Publish
 
 on:
   push:
@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write # required for npm OIDC trusted publishing
     steps:
       - uses: actions/checkout@v7
 
@@ -27,9 +28,16 @@ jobs:
 
       - run: pnpm run test
 
+      # Trusted publishing requires npm CLI >=11.5.1; the version bundled
+      # with a given Node release can lag behind that, so pin explicitly
+      # rather than relying on whatever setup-node happens to install.
+      - run: npm install -g npm@latest
+
+      # No token: this repo/workflow is registered as a trusted publisher
+      # for @transmitt0r/openclaw-plugin-paperless-ngx on npmjs.com, so npm
+      # authenticates via the id-token OIDC claim above and also attaches
+      # provenance automatically.
       - run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Publishing to ClawHub is a separate, manual step for now (`clawhub
       # package publish transmitt0r/openclaw-plugin-paperless-ngx`).
