@@ -38,6 +38,15 @@ The plugin needs the base URL of your paperless-ngx instance and an API token
 }
 ```
 
+`apiToken` also accepts a [SecretRef](https://docs.openclaw.ai/cli/config) instead of a plain string, so it doesn't have to sit in `openclaw.json` in cleartext:
+
+```bash
+openclaw config set plugins.entries.paperless-ngx.config.apiToken \
+  --ref-provider default --ref-source env --ref-id PAPERLESS_TOKEN
+```
+
+(or `--ref-source exec`/`file` for a password manager CLI, vault, etc.)
+
 ## Tools
 
 | Tool | Description |
