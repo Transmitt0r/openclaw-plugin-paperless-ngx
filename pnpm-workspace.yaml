@@ -1,3 +1,8 @@
+# Most of these come from the `openclaw` peerDependency's own dependency
+# tree (@google/genai, protobufjs, tree-sitter-bash), not from this plugin's
+# own dependencies -- they get installed locally because pnpm's
+# autoInstallPeers resolves openclaw for local dev/typechecking. esbuild is
+# the one entry that's actually ours, via vite/vitest.
 allowBuilds:
   '@google/genai': true
   esbuild: true

@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run build
+
+      - run: pnpm run test
+
+      # Publishing to ClawHub is a separate, manual step for now (`clawhub
+      # package publish transmitt0r/openclaw-plugin-paperless-ngx`) -- this
+      # job only gates the tag on a clean build/test pass and packages the
+      # verified output as a release artifact.
+      - run: npm pack --pack-destination /tmp
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: /tmp/*.tgz
+          generate_release_notes: true

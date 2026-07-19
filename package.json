@@ -4,6 +4,10 @@
   "description": "OpenClaw plugin for paperless-ngx",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": "^20.0.0 || ^22.0.0 || >=24.0.0"
+  },
+  "packageManager": "pnpm@11.13.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Transmitt0r/openclaw-plugin-paperless-ngx.git"
@@ -25,7 +29,8 @@
     "generate:types": "tsx scripts/generate-types.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run build && pnpm run test"
   },
   "peerDependencies": {
     "openclaw": ">=2026.7.0"
@@ -39,7 +44,7 @@
     "@types/node": "^22.20.1",
     "openapi-typescript": "^7.13.0",
     "tsx": "^4.23.1",
-    "typescript": "^7.0.2",
+    "typescript": "7.0.2",
     "vitest": "^4.1.10"
   }
 }

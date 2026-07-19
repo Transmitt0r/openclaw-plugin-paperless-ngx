@@ -13,6 +13,11 @@ describe("unwrap", () => {
   it("throws when data is missing", () => {
     expect(() => unwrap({})).toThrow(/no data/);
   });
+
+  it("surfaces the HTTP status for a non-2xx response with an empty body", () => {
+    const response = new Response(null, { status: 401, statusText: "Unauthorized" });
+    expect(() => unwrap({ response })).toThrow(/401/);
+  });
 });
 
 describe("createPaperlessClient", () => {
@@ -21,7 +26,7 @@ describe("createPaperlessClient", () => {
   });
 
   it("sends the token as an Authorization header and strips trailing slashes from baseUrl", async () => {
-    const fetchMock = vi.fn(
+    const fetchMock = vi.fn<typeof fetch>(
       async () => new Response(JSON.stringify({ count: 0, results: [] }), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
