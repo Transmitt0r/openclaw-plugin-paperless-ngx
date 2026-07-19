@@ -7,7 +7,7 @@ import {
 import { isSecretRef } from "openclaw/plugin-sdk/secret-input";
 import { resolveSecretRefValues } from "openclaw/plugin-sdk/secret-ref-runtime";
 import { Type } from "typebox";
-import { createPaperlessClient } from "./client.js";
+import { createPaperlessClient, type PaperlessClient } from "./client.js";
 import {
   createGetDocumentTool,
   createListDocumentsTool,
@@ -21,11 +21,6 @@ import {
   createListDocumentTypesTool,
   createListTagsTool,
 } from "./tools/taxonomy.js";
-
-export type PaperlessPluginConfig = {
-  baseUrl: string;
-  apiToken: string;
-};
 
 // Manifest-facing schema: apiToken accepts a plain string OR a SecretRef
 // object (e.g. `openclaw config set ... --ref-provider default --ref-source
@@ -56,6 +51,19 @@ async function resolveApiToken(api: OpenClawPluginApi, value: unknown): Promise<
   return resolvedValue;
 }
 
+// register() must be synchronous (the host throws "plugin register must be
+// synchronous" otherwise), so the client can't be built eagerly there when
+// apiToken might be an unresolved SecretRef needing an async lookup.
+// Instead, kick off resolution here without awaiting it and hand tools the
+// in-flight promise -- each tool's execute() (already async) awaits it,
+// resolving once and reusing the result for every subsequent call.
+function createClientHandle(api: OpenClawPluginApi): Promise<PaperlessClient> {
+  const rawConfig = api.pluginConfig as { baseUrl: string; apiToken: unknown };
+  return resolveApiToken(api, rawConfig.apiToken).then((apiToken) =>
+    createPaperlessClient({ baseUrl: rawConfig.baseUrl, apiToken }),
+  );
+}
+
 const entry: OpenClawPluginDefinition = definePluginEntry({
   id: "paperless-ngx",
   name: "paperless-ngx",
@@ -65,16 +73,8 @@ const entry: OpenClawPluginDefinition = definePluginEntry({
   configSchema: buildJsonPluginConfigSchema(
     configSchema as unknown as Parameters<typeof buildJsonPluginConfigSchema>[0],
   ),
-  // definePluginEntry types register() as returning void, but that's the
-  // standard TS accommodation for fire-and-forget async handlers -- the
-  // host awaits it before considering the plugin loaded.
-  async register(api) {
-    const rawConfig = api.pluginConfig as { baseUrl: string; apiToken: unknown };
-    const config: PaperlessPluginConfig = {
-      baseUrl: rawConfig.baseUrl,
-      apiToken: await resolveApiToken(api, rawConfig.apiToken),
-    };
-    const client = createPaperlessClient(config);
+  register(api) {
+    const client = createClientHandle(api);
 
     api.registerTool(createListDocumentsTool(client));
     api.registerTool(createGetDocumentTool(client));

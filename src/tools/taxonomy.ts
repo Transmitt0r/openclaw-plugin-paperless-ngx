@@ -20,13 +20,17 @@ type TaxonomyToolMeta = {
   endpoint: TaxonomyEndpoint;
 };
 
-function createListTaxonomyTool(client: PaperlessClient, meta: TaxonomyToolMeta): AnyAgentTool {
+function createListTaxonomyTool(
+  clientPromise: Promise<PaperlessClient>,
+  meta: TaxonomyToolMeta,
+): AnyAgentTool {
   return {
     name: meta.name,
     label: meta.label,
     description: meta.description,
     parameters: listParams,
     execute: async (_toolCallId, params: Static<typeof listParams>) => {
+      const client = await clientPromise;
       const result = unwrap(
         await client.GET(meta.endpoint, {
           params: {
@@ -43,8 +47,8 @@ function createListTaxonomyTool(client: PaperlessClient, meta: TaxonomyToolMeta)
   };
 }
 
-export function createListTagsTool(client: PaperlessClient): AnyAgentTool {
-  return createListTaxonomyTool(client, {
+export function createListTagsTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
+  return createListTaxonomyTool(clientPromise, {
     name: "paperless_list_tags",
     label: "List paperless-ngx tags",
     description: "List existing tags, optionally filtered by name.",
@@ -52,8 +56,10 @@ export function createListTagsTool(client: PaperlessClient): AnyAgentTool {
   });
 }
 
-export function createListCorrespondentsTool(client: PaperlessClient): AnyAgentTool {
-  return createListTaxonomyTool(client, {
+export function createListCorrespondentsTool(
+  clientPromise: Promise<PaperlessClient>,
+): AnyAgentTool {
+  return createListTaxonomyTool(clientPromise, {
     name: "paperless_list_correspondents",
     label: "List paperless-ngx correspondents",
     description: "List existing correspondents, optionally filtered by name.",
@@ -61,8 +67,8 @@ export function createListCorrespondentsTool(client: PaperlessClient): AnyAgentT
   });
 }
 
-export function createListDocumentTypesTool(client: PaperlessClient): AnyAgentTool {
-  return createListTaxonomyTool(client, {
+export function createListDocumentTypesTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
+  return createListTaxonomyTool(clientPromise, {
     name: "paperless_list_document_types",
     label: "List paperless-ngx document types",
     description: "List existing document types, optionally filtered by name.",
@@ -74,13 +80,17 @@ const createNamedParams = Type.Object({
   name: Type.String({ description: "Name of the new entry." }),
 });
 
-function createCreateTaxonomyTool(client: PaperlessClient, meta: TaxonomyToolMeta): AnyAgentTool {
+function createCreateTaxonomyTool(
+  clientPromise: Promise<PaperlessClient>,
+  meta: TaxonomyToolMeta,
+): AnyAgentTool {
   return {
     name: meta.name,
     label: meta.label,
     description: meta.description,
     parameters: createNamedParams,
     execute: async (_toolCallId, params: Static<typeof createNamedParams>) => {
+      const client = await clientPromise;
       const result = unwrap(
         await client.POST(meta.endpoint, {
           body: { name: params.name },
@@ -91,8 +101,10 @@ function createCreateTaxonomyTool(client: PaperlessClient, meta: TaxonomyToolMet
   };
 }
 
-export function createCreateCorrespondentTool(client: PaperlessClient): AnyAgentTool {
-  return createCreateTaxonomyTool(client, {
+export function createCreateCorrespondentTool(
+  clientPromise: Promise<PaperlessClient>,
+): AnyAgentTool {
+  return createCreateTaxonomyTool(clientPromise, {
     name: "paperless_create_correspondent",
     label: "Create paperless-ngx correspondent",
     description:
@@ -101,8 +113,10 @@ export function createCreateCorrespondentTool(client: PaperlessClient): AnyAgent
   });
 }
 
-export function createCreateDocumentTypeTool(client: PaperlessClient): AnyAgentTool {
-  return createCreateTaxonomyTool(client, {
+export function createCreateDocumentTypeTool(
+  clientPromise: Promise<PaperlessClient>,
+): AnyAgentTool {
+  return createCreateTaxonomyTool(clientPromise, {
     name: "paperless_create_document_type",
     label: "Create paperless-ngx document type",
     description:
@@ -111,8 +125,8 @@ export function createCreateDocumentTypeTool(client: PaperlessClient): AnyAgentT
   });
 }
 
-export function createCreateTagTool(client: PaperlessClient): AnyAgentTool {
-  return createCreateTaxonomyTool(client, {
+export function createCreateTagTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
+  return createCreateTaxonomyTool(clientPromise, {
     name: "paperless_create_tag",
     label: "Create paperless-ngx tag",
     description:

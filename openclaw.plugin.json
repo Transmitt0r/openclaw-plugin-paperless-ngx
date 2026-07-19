@@ -2,7 +2,7 @@
   "id": "paperless-ngx",
   "name": "paperless-ngx",
   "description": "Tools for reading and updating documents in a paperless-ngx instance.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",

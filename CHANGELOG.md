@@ -3,7 +3,17 @@
 All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.2.0] - Unreleased
+## [0.2.1] - Unreleased
+
+- Fix `register(): plugin register must be synchronous`. 0.2.0's async
+  `register()` (needed to await SecretRef resolution, see 0.1.3) is
+  rejected outright by the host -- confirmed by actually installing 0.2.0
+  on a live gateway, not just by local structural checks. `register()` is
+  synchronous again; it now kicks off token resolution without awaiting
+  it and hands each tool the in-flight `Promise<PaperlessClient>`, which
+  every tool's already-async `execute()` awaits before making a request.
+
+## [0.2.0] - 2026-07-19
 
 - **Breaking:** remove `paperless_list_documents`' `is_in_inbox` filter.
   It was really just a special case of `tag_id` scoped to whichever tag

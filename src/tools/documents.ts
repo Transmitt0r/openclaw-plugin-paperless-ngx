@@ -56,7 +56,7 @@ const listDocumentsParams = Type.Object({
   fields: fieldsParam,
 });
 
-export function createListDocumentsTool(client: PaperlessClient): AnyAgentTool {
+export function createListDocumentsTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
   return {
     name: "paperless_list_documents",
     label: "List paperless-ngx documents",
@@ -64,6 +64,7 @@ export function createListDocumentsTool(client: PaperlessClient): AnyAgentTool {
       "Search or filter documents in paperless-ngx. Results include each document's OCR content by default, so a separate get call usually isn't needed just to read text -- but for large result sets, pass `fields` to omit `content` and save tokens.",
     parameters: listDocumentsParams,
     execute: async (_toolCallId, params: Static<typeof listDocumentsParams>) => {
+      const client = await clientPromise;
       const result = unwrap(
         await client.GET("/api/documents/", {
           params: {
@@ -94,13 +95,14 @@ const getDocumentParams = Type.Object({
   fields: fieldsParam,
 });
 
-export function createGetDocumentTool(client: PaperlessClient): AnyAgentTool {
+export function createGetDocumentTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
   return {
     name: "paperless_get_document",
     label: "Get paperless-ngx document",
     description: "Fetch a single document by id, including its OCR content and metadata.",
     parameters: getDocumentParams,
     execute: async (_toolCallId, params: Static<typeof getDocumentParams>) => {
+      const client = await clientPromise;
       const result = unwrap(
         await client.GET("/api/documents/{id}/", {
           params: { path: { id: params.id }, query: { fields: params.fields } },
@@ -134,7 +136,7 @@ const updateDocumentParams = Type.Object({
   created: Type.Optional(Type.String({ description: "Document date in YYYY-MM-DD format." })),
 });
 
-export function createUpdateDocumentTool(client: PaperlessClient): AnyAgentTool {
+export function createUpdateDocumentTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
   return {
     name: "paperless_update_document",
     label: "Update paperless-ngx document",
@@ -142,6 +144,7 @@ export function createUpdateDocumentTool(client: PaperlessClient): AnyAgentTool 
       "Patch a document's title, correspondent, document type, tags, or created date. Only provided top-level fields are changed; `tags`, if provided, fully replaces the document's tag list rather than adding to it. Does not touch storage_path.",
     parameters: updateDocumentParams,
     execute: async (_toolCallId, params: Static<typeof updateDocumentParams>) => {
+      const client = await clientPromise;
       const { id, correspondent_id, document_type_id, ...rest } = params;
       const result = unwrap(
         await client.PATCH("/api/documents/{id}/", {
