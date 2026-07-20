@@ -42,6 +42,14 @@ jobs:
       - name: Publish to ClawHub
         env:
           CLAWHUB_API_KEY: ${{ secrets.CLAWHUB_API_KEY }}
+          # actions/setup-node's registry-url wrote a temp .npmrc with an
+          # unresolved ${NODE_AUTH_TOKEN} placeholder and pointed
+          # NPM_CONFIG_USERCONFIG at it for the rest of the job. That's
+          # only needed for `npm publish`'s OIDC auth above -- clawhub's
+          # own npm pack invocation doesn't need registry auth at all, and
+          # that leftover config breaks it (npm pack did not return a
+          # tarball filename). Fall back to the default ~/.npmrc.
+          NPM_CONFIG_USERCONFIG: ""
         run: |
           npx --yes clawhub login --token "$CLAWHUB_API_KEY" --no-browser
           openclaw_version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/openclaw/package.json','utf8')).version)")
