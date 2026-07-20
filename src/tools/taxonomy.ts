@@ -1,8 +1,9 @@
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { type Static, Type } from "typebox";
-import type { PaperlessClientHandle } from "../client.js";
+import type { PaperlessClient, PaperlessClientHandle } from "../client.js";
 import { toToolResult, unwrap } from "../client.js";
 import { paginationParams } from "./pagination.js";
+import { fetchNameMap } from "./relations.js";
 
 type TaxonomyEndpoint = "/api/tags/" | "/api/correspondents/" | "/api/document_types/";
 
@@ -12,6 +13,74 @@ const listParams = Type.Object({
   ),
   ...paginationParams,
 });
+
+// owner/permissions are ACL metadata: not settable via any tool in this
+// plugin and not relevant to taxonomy lookups -- stripped for the same
+// reason as on documents (see shapeDocument in documents.ts).
+function stripAcl<T extends Record<string, unknown>>(item: T): Omit<T, "owner" | "permissions"> {
+  const { owner: _owner, permissions: _permissions, ...rest } = item;
+  return rest;
+}
+
+// Tags can be hierarchical (parent/children), carried as bare ids just like
+// documents' correspondent/document_type/tags. Resolved the same way: batch
+// id__in lookups against /api/tags/ itself.
+function collectTagHierarchyIds(tags: Record<string, unknown>[]): number[] {
+  const ids = new Set<number>();
+  for (const tag of tags) {
+    if (typeof tag.parent === "number") ids.add(tag.parent);
+    if (Array.isArray(tag.children)) {
+      for (const childId of tag.children) {
+        if (typeof childId === "number") ids.add(childId);
+      }
+    }
+  }
+  return [...ids];
+}
+
+function shapeTag<T extends Record<string, unknown>>(
+  tagNames: Map<number, string>,
+  tag: T,
+): Record<string, unknown> {
+  const { parent, children } = tag;
+  return {
+    ...stripAcl(tag),
+    ...(typeof parent === "number" && tagNames.has(parent)
+      ? { parent_name: tagNames.get(parent) }
+      : {}),
+    ...(Array.isArray(children)
+      ? {
+          children_names: children
+            .filter(
+              (childId): childId is number => typeof childId === "number" && tagNames.has(childId),
+            )
+            .map((childId) => tagNames.get(childId)),
+        }
+      : {}),
+  };
+}
+
+async function shapeTagList<T extends { results?: unknown[] }>(
+  client: PaperlessClient,
+  response: T,
+): Promise<T> {
+  const tags = Array.isArray(response.results)
+    ? (response.results as Record<string, unknown>[])
+    : [];
+  const tagNames = await fetchNameMap(client, "/api/tags/", collectTagHierarchyIds(tags));
+  return {
+    ...response,
+    results: tags.map((tag) => shapeTag(tagNames, tag)),
+  };
+}
+
+async function shapeSingleTag(
+  client: PaperlessClient,
+  tag: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const tagNames = await fetchNameMap(client, "/api/tags/", collectTagHierarchyIds([tag]));
+  return shapeTag(tagNames, tag);
+}
 
 type TaxonomyToolMeta = {
   name: string;
@@ -42,7 +111,13 @@ function createListTaxonomyTool(
           },
         }),
       );
-      return toToolResult(result);
+      if (meta.endpoint === "/api/tags/") {
+        return toToolResult(await shapeTagList(client, result));
+      }
+      return toToolResult({
+        ...result,
+        results: Array.isArray(result.results) ? result.results.map(stripAcl) : result.results,
+      });
     },
   };
 }
@@ -51,7 +126,8 @@ export function createListTagsTool(handlePromise: Promise<PaperlessClientHandle>
   return createListTaxonomyTool(handlePromise, {
     name: "paperless_list_tags",
     label: "List paperless-ngx tags",
-    description: "List existing tags, optionally filtered by name.",
+    description:
+      "List existing tags, optionally filtered by name. parent/children tag ids are automatically resolved to parent_name/children_names alongside the ids.",
     endpoint: "/api/tags/",
   });
 }
@@ -98,7 +174,10 @@ function createCreateTaxonomyTool(
           body: { name: params.name },
         }),
       );
-      return toToolResult(result);
+      if (meta.endpoint === "/api/tags/") {
+        return toToolResult(await shapeSingleTag(client, result));
+      }
+      return toToolResult(stripAcl(result));
     },
   };
 }

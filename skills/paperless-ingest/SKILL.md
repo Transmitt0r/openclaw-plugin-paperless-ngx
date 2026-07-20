@@ -37,7 +37,9 @@ Use the paperless-ngx plugin's tools for everything — never make raw HTTP call
 
 `paperless_update_document` per document:
 - `id`, `title`, `correspondent_id` (id, or `null` to clear), `document_type_id` (id, or `null` to clear), `created` (`YYYY-MM-DD`)
-- `tags`: full-replacement array of tag ids — existing non-inbox tags plus new ones, with the inbox tag id(s) removed. This is a full replacement, not a delta.
+- `add_tag_ids`: any new topic tags to add
+- `remove_tag_ids`: the inbox tag id(s) from pre-flight
+- All in one call — `add_tag_ids`/`remove_tag_ids` adjust the tag list without needing to know or replay the document's full existing tags.
 
 ## Report
 
