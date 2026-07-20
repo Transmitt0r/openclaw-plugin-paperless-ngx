@@ -23,3 +23,5 @@ jobs:
           echo "which node: $(which node)"
           mkdir -p /tmp/debugpack
           npm pack . --json --ignore-scripts --pack-destination /tmp/debugpack
+      - run: npx --yes clawhub package publish . --family code-plugin --dry-run --json
+        continue-on-error: true
