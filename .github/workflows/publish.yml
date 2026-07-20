@@ -39,23 +39,12 @@ jobs:
       # provenance automatically.
       - run: npm publish
 
-      - name: Publish to ClawHub
-        env:
-          CLAWHUB_API_KEY: ${{ secrets.CLAWHUB_API_KEY }}
-          # actions/setup-node's registry-url wrote a temp .npmrc with an
-          # unresolved ${NODE_AUTH_TOKEN} placeholder and pointed
-          # NPM_CONFIG_USERCONFIG at it for the rest of the job. That's
-          # only needed for `npm publish`'s OIDC auth above -- clawhub's
-          # own npm pack invocation doesn't need registry auth at all, and
-          # that leftover config breaks it (npm pack did not return a
-          # tarball filename). Fall back to the default ~/.npmrc.
-          NPM_CONFIG_USERCONFIG: ""
-        run: |
-          npx --yes clawhub login --token "$CLAWHUB_API_KEY" --no-browser
-          openclaw_version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/openclaw/package.json','utf8')).version)")
-          npm pkg set openclaw.build.openclawVersion="$openclaw_version"
-          npx --yes clawhub package publish . --family code-plugin --json
-
+      # Publishing to ClawHub is a separate, manual step for now (`clawhub
+      # package publish transmitt0r/openclaw-plugin-paperless-ngx`) -- CI
+      # automation hit an environment-specific bug in clawhub's internal
+      # npm pack invocation ("npm pack did not return a tarball filename")
+      # that a plain npm pack in the same job doesn't reproduce; needs more
+      # investigation before wiring it back in.
       - run: npm pack --pack-destination /tmp
 
       - uses: softprops/action-gh-release@v3
