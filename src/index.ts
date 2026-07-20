@@ -7,7 +7,7 @@ import {
 import { isSecretRef } from "openclaw/plugin-sdk/secret-input";
 import { resolveSecretRefValues } from "openclaw/plugin-sdk/secret-ref-runtime";
 import { Type } from "typebox";
-import { createPaperlessClient, type PaperlessClient } from "./client.js";
+import { createPaperlessClient, type PaperlessClientHandle } from "./client.js";
 import {
   createGetDocumentTool,
   createListDocumentsTool,
@@ -57,11 +57,13 @@ async function resolveApiToken(api: OpenClawPluginApi, value: unknown): Promise<
 // Instead, kick off resolution here without awaiting it and hand tools the
 // in-flight promise -- each tool's execute() (already async) awaits it,
 // resolving once and reusing the result for every subsequent call.
-function createClientHandle(api: OpenClawPluginApi): Promise<PaperlessClient> {
+function createClientHandle(api: OpenClawPluginApi): Promise<PaperlessClientHandle> {
   const rawConfig = api.pluginConfig as { baseUrl: string; apiToken: unknown };
-  return resolveApiToken(api, rawConfig.apiToken).then((apiToken) =>
-    createPaperlessClient({ baseUrl: rawConfig.baseUrl, apiToken }),
-  );
+  const baseUrl = rawConfig.baseUrl.replace(/\/+$/, "");
+  return resolveApiToken(api, rawConfig.apiToken).then((apiToken) => ({
+    client: createPaperlessClient({ baseUrl: rawConfig.baseUrl, apiToken }),
+    baseUrl,
+  }));
 }
 
 const entry: OpenClawPluginDefinition = definePluginEntry({
@@ -74,17 +76,17 @@ const entry: OpenClawPluginDefinition = definePluginEntry({
     configSchema as unknown as Parameters<typeof buildJsonPluginConfigSchema>[0],
   ),
   register(api) {
-    const client = createClientHandle(api);
+    const handle = createClientHandle(api);
 
-    api.registerTool(createListDocumentsTool(client));
-    api.registerTool(createGetDocumentTool(client));
-    api.registerTool(createUpdateDocumentTool(client));
-    api.registerTool(createListTagsTool(client));
-    api.registerTool(createCreateTagTool(client));
-    api.registerTool(createListCorrespondentsTool(client));
-    api.registerTool(createCreateCorrespondentTool(client));
-    api.registerTool(createListDocumentTypesTool(client));
-    api.registerTool(createCreateDocumentTypeTool(client));
+    api.registerTool(createListDocumentsTool(handle));
+    api.registerTool(createGetDocumentTool(handle));
+    api.registerTool(createUpdateDocumentTool(handle));
+    api.registerTool(createListTagsTool(handle));
+    api.registerTool(createCreateTagTool(handle));
+    api.registerTool(createListCorrespondentsTool(handle));
+    api.registerTool(createCreateCorrespondentTool(handle));
+    api.registerTool(createListDocumentTypesTool(handle));
+    api.registerTool(createCreateDocumentTypeTool(handle));
   },
 });
 

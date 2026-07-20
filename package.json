@@ -1,6 +1,6 @@
 {
   "name": "@transmitt0r/openclaw-plugin-paperless-ngx",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "OpenClaw plugin for paperless-ngx",
   "type": "module",
   "license": "MIT",

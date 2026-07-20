@@ -8,6 +8,13 @@ export type PaperlessClientConfig = {
 
 export type PaperlessClient = ReturnType<typeof createClient<paths>>;
 
+// Tools need baseUrl (not just the configured client) to build document
+// links back to the paperless-ngx web UI in their responses.
+export type PaperlessClientHandle = {
+  client: PaperlessClient;
+  baseUrl: string;
+};
+
 // paperless-ngx is typically a LAN device; without a bounded deadline, a
 // stalled server or a dropped connection hangs a tool call indefinitely.
 // Retries are deliberately not added here: PATCH/POST calls in this plugin
@@ -22,6 +29,14 @@ export function createPaperlessClient(config: PaperlessClientConfig): PaperlessC
     headers: {
       Authorization: `Token ${config.apiToken}`,
     },
+    // openapi-fetch defaults array query params to OpenAPI "form, exploded"
+    // style (repeated ?fields=a&fields=b&fields=c). paperless-ngx's DRF
+    // backend only reads the last occurrence of a repeated query key, so a
+    // multi-value `fields` filter silently collapsed to just the last
+    // field. paperless-ngx's own multi-value filters (fields, *__id__in,
+    // etc.) all expect a single comma-joined value instead -- verified
+    // against a live instance.
+    querySerializer: { array: { style: "form", explode: false } },
     fetch: (request) =>
       fetch(request, {
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(DEFAULT_TIMEOUT_MS)]),

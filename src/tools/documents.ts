@@ -1,6 +1,6 @@
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { type Static, Type } from "typebox";
-import type { PaperlessClient } from "../client.js";
+import type { PaperlessClientHandle } from "../client.js";
 import { toToolResult, unwrap } from "../client.js";
 import { paginationParams } from "./pagination.js";
 
@@ -15,6 +15,45 @@ function clampPageSize(pageSize: number | undefined): number | undefined {
   return Math.min(Math.max(pageSize, 1), MAX_PAGE_SIZE);
 }
 
+// Strips fields that are pure noise for a tool-calling model and adds a
+// direct link to the document in the paperless-ngx web UI:
+// - created_date duplicates created and is marked @deprecated by
+//   paperless-ngx's own schema.
+// - url isn't part of the API response at all; paperless-ngx's frontend
+//   route for a document is /documents/{id}/details (verified against a
+//   live instance).
+// Only touches fields that are actually present, so a `fields`-narrowed
+// response (e.g. without `id`) isn't corrupted.
+function shapeDocument<T extends Record<string, unknown>>(
+  baseUrl: string,
+  document: T,
+): Omit<T, "created_date"> & { url?: string } {
+  const { created_date: _createdDate, ...rest } = document;
+  const id = document.id;
+  return {
+    ...rest,
+    ...(typeof id === "number" ? { url: `${baseUrl}/documents/${id}/details` } : {}),
+  };
+}
+
+// paperless-ngx's paginated list response always includes an `all` array of
+// every matching document id, regardless of page_size or fields -- there's
+// no query param to disable it (checked the OpenAPI schema). It's meant for
+// "select all N results" bulk-action UI, not useful to a tool-calling model,
+// and can be a few KB by itself on a large collection.
+function shapeDocumentList<T extends { all?: unknown; results?: unknown[] }>(
+  baseUrl: string,
+  response: T,
+): Omit<T, "all"> {
+  const { all: _all, results, ...rest } = response;
+  return {
+    ...rest,
+    results: Array.isArray(results)
+      ? results.map((doc) => shapeDocument(baseUrl, doc as Record<string, unknown>))
+      : results,
+  } as Omit<T, "all">;
+}
+
 const fieldsParam = Type.Optional(
   Type.Array(Type.String(), {
     description:
@@ -24,12 +63,19 @@ const fieldsParam = Type.Optional(
 
 const listDocumentsParams = Type.Object({
   search: Type.Optional(
-    Type.String({ description: "Free-text search term across title and content." }),
+    Type.String({
+      description: "Free-text search across OCR content and metadata (fuzzy, ranked).",
+    }),
   ),
   query: Type.Optional(
     Type.String({
       description:
-        "Advanced search query string (paperless-ngx query syntax, e.g. 'correspondent:Foo type:Invoice').",
+        "Advanced query using paperless-ngx's own filter syntax, e.g. 'correspondent:\"Foo\" type:Invoice'. Different from `search`: this is a structured filter expression, not a free-text/OCR search.",
+    }),
+  ),
+  ids: Type.Optional(
+    Type.Array(Type.Integer(), {
+      description: "Return exactly these document ids (batch get). Ignores other filters.",
     }),
   ),
   correspondent_id: Type.Optional(Type.Integer({ description: "Filter by correspondent id." })),
@@ -56,7 +102,9 @@ const listDocumentsParams = Type.Object({
   fields: fieldsParam,
 });
 
-export function createListDocumentsTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
+export function createListDocumentsTool(
+  handlePromise: Promise<PaperlessClientHandle>,
+): AnyAgentTool {
   return {
     name: "paperless_list_documents",
     label: "List paperless-ngx documents",
@@ -64,13 +112,14 @@ export function createListDocumentsTool(clientPromise: Promise<PaperlessClient>)
       "Search or filter documents in paperless-ngx. Results include each document's OCR content by default, so a separate get call usually isn't needed just to read text -- but for large result sets, pass `fields` to omit `content` and save tokens.",
     parameters: listDocumentsParams,
     execute: async (_toolCallId, params: Static<typeof listDocumentsParams>) => {
-      const client = await clientPromise;
+      const { client, baseUrl } = await handlePromise;
       const result = unwrap(
         await client.GET("/api/documents/", {
           params: {
             query: {
               search: params.search,
               query: params.query,
+              id__in: params.ids,
               correspondent__id: params.correspondent_id,
               document_type__id: params.document_type_id,
               tags__id: params.tag_id,
@@ -85,7 +134,7 @@ export function createListDocumentsTool(clientPromise: Promise<PaperlessClient>)
           },
         }),
       );
-      return toToolResult(result);
+      return toToolResult(shapeDocumentList(baseUrl, result));
     },
   };
 }
@@ -95,20 +144,20 @@ const getDocumentParams = Type.Object({
   fields: fieldsParam,
 });
 
-export function createGetDocumentTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
+export function createGetDocumentTool(handlePromise: Promise<PaperlessClientHandle>): AnyAgentTool {
   return {
     name: "paperless_get_document",
     label: "Get paperless-ngx document",
     description: "Fetch a single document by id, including its OCR content and metadata.",
     parameters: getDocumentParams,
     execute: async (_toolCallId, params: Static<typeof getDocumentParams>) => {
-      const client = await clientPromise;
+      const { client, baseUrl } = await handlePromise;
       const result = unwrap(
         await client.GET("/api/documents/{id}/", {
           params: { path: { id: params.id }, query: { fields: params.fields } },
         }),
       );
-      return toToolResult(result);
+      return toToolResult(shapeDocument(baseUrl, result));
     },
   };
 }
@@ -136,7 +185,9 @@ const updateDocumentParams = Type.Object({
   created: Type.Optional(Type.String({ description: "Document date in YYYY-MM-DD format." })),
 });
 
-export function createUpdateDocumentTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
+export function createUpdateDocumentTool(
+  handlePromise: Promise<PaperlessClientHandle>,
+): AnyAgentTool {
   return {
     name: "paperless_update_document",
     label: "Update paperless-ngx document",
@@ -144,7 +195,7 @@ export function createUpdateDocumentTool(clientPromise: Promise<PaperlessClient>
       "Patch a document's title, correspondent, document type, tags, or created date. Only provided top-level fields are changed; `tags`, if provided, fully replaces the document's tag list rather than adding to it. Does not touch storage_path.",
     parameters: updateDocumentParams,
     execute: async (_toolCallId, params: Static<typeof updateDocumentParams>) => {
-      const client = await clientPromise;
+      const { client, baseUrl } = await handlePromise;
       const { id, correspondent_id, document_type_id, ...rest } = params;
       const result = unwrap(
         await client.PATCH("/api/documents/{id}/", {
@@ -162,7 +213,7 @@ export function createUpdateDocumentTool(clientPromise: Promise<PaperlessClient>
           },
         }),
       );
-      return toToolResult(result);
+      return toToolResult(shapeDocument(baseUrl, result));
     },
   };
 }

@@ -1,6 +1,6 @@
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { type Static, Type } from "typebox";
-import type { PaperlessClient } from "../client.js";
+import type { PaperlessClientHandle } from "../client.js";
 import { toToolResult, unwrap } from "../client.js";
 import { paginationParams } from "./pagination.js";
 
@@ -21,7 +21,7 @@ type TaxonomyToolMeta = {
 };
 
 function createListTaxonomyTool(
-  clientPromise: Promise<PaperlessClient>,
+  handlePromise: Promise<PaperlessClientHandle>,
   meta: TaxonomyToolMeta,
 ): AnyAgentTool {
   return {
@@ -30,7 +30,7 @@ function createListTaxonomyTool(
     description: meta.description,
     parameters: listParams,
     execute: async (_toolCallId, params: Static<typeof listParams>) => {
-      const client = await clientPromise;
+      const { client } = await handlePromise;
       const result = unwrap(
         await client.GET(meta.endpoint, {
           params: {
@@ -47,8 +47,8 @@ function createListTaxonomyTool(
   };
 }
 
-export function createListTagsTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
-  return createListTaxonomyTool(clientPromise, {
+export function createListTagsTool(handlePromise: Promise<PaperlessClientHandle>): AnyAgentTool {
+  return createListTaxonomyTool(handlePromise, {
     name: "paperless_list_tags",
     label: "List paperless-ngx tags",
     description: "List existing tags, optionally filtered by name.",
@@ -57,9 +57,9 @@ export function createListTagsTool(clientPromise: Promise<PaperlessClient>): Any
 }
 
 export function createListCorrespondentsTool(
-  clientPromise: Promise<PaperlessClient>,
+  handlePromise: Promise<PaperlessClientHandle>,
 ): AnyAgentTool {
-  return createListTaxonomyTool(clientPromise, {
+  return createListTaxonomyTool(handlePromise, {
     name: "paperless_list_correspondents",
     label: "List paperless-ngx correspondents",
     description: "List existing correspondents, optionally filtered by name.",
@@ -67,8 +67,10 @@ export function createListCorrespondentsTool(
   });
 }
 
-export function createListDocumentTypesTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
-  return createListTaxonomyTool(clientPromise, {
+export function createListDocumentTypesTool(
+  handlePromise: Promise<PaperlessClientHandle>,
+): AnyAgentTool {
+  return createListTaxonomyTool(handlePromise, {
     name: "paperless_list_document_types",
     label: "List paperless-ngx document types",
     description: "List existing document types, optionally filtered by name.",
@@ -81,7 +83,7 @@ const createNamedParams = Type.Object({
 });
 
 function createCreateTaxonomyTool(
-  clientPromise: Promise<PaperlessClient>,
+  handlePromise: Promise<PaperlessClientHandle>,
   meta: TaxonomyToolMeta,
 ): AnyAgentTool {
   return {
@@ -90,7 +92,7 @@ function createCreateTaxonomyTool(
     description: meta.description,
     parameters: createNamedParams,
     execute: async (_toolCallId, params: Static<typeof createNamedParams>) => {
-      const client = await clientPromise;
+      const { client } = await handlePromise;
       const result = unwrap(
         await client.POST(meta.endpoint, {
           body: { name: params.name },
@@ -102,9 +104,9 @@ function createCreateTaxonomyTool(
 }
 
 export function createCreateCorrespondentTool(
-  clientPromise: Promise<PaperlessClient>,
+  handlePromise: Promise<PaperlessClientHandle>,
 ): AnyAgentTool {
-  return createCreateTaxonomyTool(clientPromise, {
+  return createCreateTaxonomyTool(handlePromise, {
     name: "paperless_create_correspondent",
     label: "Create paperless-ngx correspondent",
     description:
@@ -114,9 +116,9 @@ export function createCreateCorrespondentTool(
 }
 
 export function createCreateDocumentTypeTool(
-  clientPromise: Promise<PaperlessClient>,
+  handlePromise: Promise<PaperlessClientHandle>,
 ): AnyAgentTool {
-  return createCreateTaxonomyTool(clientPromise, {
+  return createCreateTaxonomyTool(handlePromise, {
     name: "paperless_create_document_type",
     label: "Create paperless-ngx document type",
     description:
@@ -125,8 +127,8 @@ export function createCreateDocumentTypeTool(
   });
 }
 
-export function createCreateTagTool(clientPromise: Promise<PaperlessClient>): AnyAgentTool {
-  return createCreateTaxonomyTool(clientPromise, {
+export function createCreateTagTool(handlePromise: Promise<PaperlessClientHandle>): AnyAgentTool {
+  return createCreateTaxonomyTool(handlePromise, {
     name: "paperless_create_tag",
     label: "Create paperless-ngx tag",
     description:
