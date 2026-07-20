@@ -1,6 +1,6 @@
 {
   "name": "@transmitt0r/openclaw-plugin-paperless-ngx",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "OpenClaw plugin for paperless-ngx",
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,8 @@
       "./dist/index.js"
     ],
     "compat": {
-      "openclaw": ">=2026.7.0"
+      "openclaw": ">=2026.7.0",
+      "pluginApi": ">=2026.7.0"
     }
   },
   "main": "./dist/index.js",

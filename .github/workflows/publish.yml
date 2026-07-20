@@ -39,8 +39,15 @@ jobs:
       # provenance automatically.
       - run: npm publish
 
-      # Publishing to ClawHub is a separate, manual step for now (`clawhub
-      # package publish transmitt0r/openclaw-plugin-paperless-ngx`).
+      - name: Publish to ClawHub
+        env:
+          CLAWHUB_API_KEY: ${{ secrets.CLAWHUB_API_KEY }}
+        run: |
+          npx --yes clawhub login --token "$CLAWHUB_API_KEY" --no-browser
+          openclaw_version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('node_modules/openclaw/package.json','utf8')).version)")
+          npm pkg set openclaw.build.openclawVersion="$openclaw_version"
+          npx --yes clawhub package publish . --family code-plugin --json
+
       - run: npm pack --pack-destination /tmp
 
       - uses: softprops/action-gh-release@v3
