@@ -53,7 +53,7 @@ openclaw config set plugins.entries.paperless-ngx.config.apiToken \
 | --- | --- |
 | `paperless_list_documents` | Search/filter documents (full-text search, correspondent, document type, tag, date range, ordering, pagination), or batch-fetch by `ids`. Results include OCR content and a link to each document in the paperless-ngx web UI. |
 | `paperless_get_document` | Fetch a single document by id. |
-| `paperless_update_document` | Patch a document's title, correspondent, document type, tags, or created date. Never touches `storage_path`. |
+| `paperless_update_document` | Patch a document's title, correspondent, document type, tags, or created date. Never touches `storage_path`. Pass `fields` to trim the echoed-back response (e.g. skip OCR `content`) — the API itself always computes the full document, this just filters what's returned to you. |
 | `paperless_list_tags` | List tags, optionally filtered by name. |
 | `paperless_create_tag` | Create a new tag. |
 | `paperless_list_correspondents` | List correspondents, optionally filtered by name. |

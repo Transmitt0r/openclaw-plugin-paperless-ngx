@@ -70,7 +70,11 @@ const listDocumentsParams = Type.Object({
   query: Type.Optional(
     Type.String({
       description:
-        "Advanced query using paperless-ngx's own filter syntax, e.g. 'correspondent:\"Foo\" type:Invoice'. Different from `search`: this is a structured filter expression, not a free-text/OCR search.",
+        "Advanced structured filter using paperless-ngx's Whoosh-based query syntax (different from " +
+        "`search`, which is free-text/OCR ranking). Field names are: type, tag, correspondent, created, " +
+        "added, modified, content, title -- NOT the REST filter names (`document_type` and `tags` do NOT " +
+        "work here). Supports AND/OR with parentheses, quoted phrases, wildcards (produ*name), and date " +
+        "ranges/relatives (created:[2005 to 2009], created:yesterday). Example: 'correspondent:\"Foo\" AND type:Invoice'.",
     }),
   ),
   ids: Type.Optional(
@@ -183,7 +187,25 @@ const updateDocumentParams = Type.Object({
     }),
   ),
   created: Type.Optional(Type.String({ description: "Document date in YYYY-MM-DD format." })),
+  fields: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "Only return these fields in the response (`id` and `url` are always included). paperless-ngx's " +
+        "update endpoint doesn't support a server-side sparse fieldset like list/get do, so this trims the " +
+        "response after the fact -- pass it to avoid getting the full document (including OCR `content`) " +
+        "echoed back when you only care that the update succeeded.",
+    }),
+  ),
 });
+
+function pickFields<T extends Record<string, unknown>>(
+  fields: string[] | undefined,
+  obj: T,
+): Partial<T> {
+  if (!fields || fields.length === 0) return obj;
+  const keep = new Set(["id", "url", ...fields]);
+  return Object.fromEntries(Object.entries(obj).filter(([key]) => keep.has(key))) as Partial<T>;
+}
 
 export function createUpdateDocumentTool(
   handlePromise: Promise<PaperlessClientHandle>,
@@ -196,7 +218,7 @@ export function createUpdateDocumentTool(
     parameters: updateDocumentParams,
     execute: async (_toolCallId, params: Static<typeof updateDocumentParams>) => {
       const { client, baseUrl } = await handlePromise;
-      const { id, correspondent_id, document_type_id, ...rest } = params;
+      const { id, correspondent_id, document_type_id, fields, ...rest } = params;
       const result = unwrap(
         await client.PATCH("/api/documents/{id}/", {
           params: { path: { id } },
@@ -213,7 +235,7 @@ export function createUpdateDocumentTool(
           },
         }),
       );
-      return toToolResult(shapeDocument(baseUrl, result));
+      return toToolResult(pickFields(fields, shapeDocument(baseUrl, result)));
     },
   };
 }
