@@ -57,6 +57,76 @@ async function resolveNameMaps(
   return { correspondents, documentTypes, tags };
 }
 
+// How much of a document's OCR content to keep in a shaped response.
+// `snippetTerm` (a `search`/`query` string) is only used when `includeContent`
+// is false: it locates the term in the content and keeps a short window
+// around it instead of either the full text or nothing.
+type ContentOptions = {
+  includeContent: boolean;
+  snippetTerm?: string;
+};
+
+const SNIPPET_CONTEXT_CHARS = 160;
+
+// Best-effort preview around the first place `term` occurs in `content`.
+// `term` may be a `search` string (free text) or a `query` string
+// (paperless-ngx's Whoosh syntax, e.g. `correspondent:"Foo" AND type:Invoice`)
+// -- field prefixes/operators/quotes are stripped down to bare words since
+// none of that syntax appears literally in OCR text. Falls back to a leading
+// excerpt when no word from `term` is found (e.g. the match was on metadata,
+// not content) or when `term` is omitted.
+function extractSnippet(content: string, term: string | undefined): string {
+  const trimmed = content.trim();
+  const leadingExcerpt = () =>
+    trimmed.length > SNIPPET_CONTEXT_CHARS * 2
+      ? `${trimmed.slice(0, SNIPPET_CONTEXT_CHARS * 2)}…`
+      : trimmed;
+
+  if (!term) return leadingExcerpt();
+
+  const words = term
+    .replace(/[A-Za-z_]+:/g, " ")
+    .replace(/["()]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word && !/^(AND|OR|NOT)$/i.test(word));
+
+  const lowerContent = content.toLowerCase();
+  let matchIndex = -1;
+  for (const word of words) {
+    const idx = lowerContent.indexOf(word.toLowerCase());
+    if (idx !== -1) {
+      matchIndex = idx;
+      break;
+    }
+  }
+  if (matchIndex === -1) return leadingExcerpt();
+
+  const start = Math.max(0, matchIndex - SNIPPET_CONTEXT_CHARS);
+  const end = Math.min(content.length, matchIndex + SNIPPET_CONTEXT_CHARS);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < content.length ? "…" : "";
+  return `${prefix}${content.slice(start, end).trim()}${suffix}`;
+}
+
+// `content` is opt-in (see listDocumentsParams/getDocumentParams `include_content`):
+// full OCR text is dropped unless explicitly requested, since a broad list call
+// returning dozens of documents' full text can blow past the calling LLM's
+// context/token budget. When a search/query term is known and content was
+// dropped, a short content_snippet around the match is kept instead so results
+// stay useful without the full text -- for anything more, paperless_grep_document
+// and paperless_get_document_range fetch targeted excerpts on demand.
+function applyContentPolicy(
+  document: Record<string, unknown>,
+  options: ContentOptions,
+): Record<string, unknown> {
+  const { content, ...rest } = document;
+  if (options.includeContent) return document;
+  if (typeof content === "string" && options.snippetTerm !== undefined) {
+    return { ...rest, content_snippet: extractSnippet(content, options.snippetTerm) };
+  }
+  return rest;
+}
+
 // Strips fields that are pure noise or unresolvable for a tool-calling model,
 // and adds a direct link to the document in the paperless-ngx web UI:
 // - created_date duplicates created and is marked @deprecated by
@@ -77,6 +147,7 @@ function shapeDocument<T extends Record<string, unknown>>(
   baseUrl: string,
   maps: NameMaps,
   document: T,
+  contentOptions: ContentOptions,
 ): Record<string, unknown> {
   const {
     created_date: _createdDate,
@@ -90,32 +161,36 @@ function shapeDocument<T extends Record<string, unknown>>(
   const correspondent = document.correspondent;
   const documentType = document.document_type;
   const tags = document.tags;
-  return {
-    ...rest,
-    ...(typeof id === "number" ? { url: `${baseUrl}/documents/${id}/details` } : {}),
-    ...(typeof correspondent === "number" && maps.correspondents.has(correspondent)
-      ? { correspondent_name: maps.correspondents.get(correspondent) }
-      : {}),
-    ...(typeof documentType === "number" && maps.documentTypes.has(documentType)
-      ? { document_type_name: maps.documentTypes.get(documentType) }
-      : {}),
-    ...(Array.isArray(tags)
-      ? {
-          tag_names: tags
-            .filter((tagId): tagId is number => typeof tagId === "number" && maps.tags.has(tagId))
-            .map((tagId) => maps.tags.get(tagId)),
-        }
-      : {}),
-  };
+  return applyContentPolicy(
+    {
+      ...rest,
+      ...(typeof id === "number" ? { url: `${baseUrl}/documents/${id}/details` } : {}),
+      ...(typeof correspondent === "number" && maps.correspondents.has(correspondent)
+        ? { correspondent_name: maps.correspondents.get(correspondent) }
+        : {}),
+      ...(typeof documentType === "number" && maps.documentTypes.has(documentType)
+        ? { document_type_name: maps.documentTypes.get(documentType) }
+        : {}),
+      ...(Array.isArray(tags)
+        ? {
+            tag_names: tags
+              .filter((tagId): tagId is number => typeof tagId === "number" && maps.tags.has(tagId))
+              .map((tagId) => maps.tags.get(tagId)),
+          }
+        : {}),
+    },
+    contentOptions,
+  );
 }
 
 async function shapeSingleDocument(
   client: PaperlessClient,
   baseUrl: string,
   document: Record<string, unknown>,
+  contentOptions: ContentOptions,
 ): Promise<Record<string, unknown>> {
   const maps = await resolveNameMaps(client, [document]);
-  return shapeDocument(baseUrl, maps, document);
+  return shapeDocument(baseUrl, maps, document, contentOptions);
 }
 
 // paperless-ngx's paginated list response always includes an `all` array of
@@ -127,20 +202,35 @@ async function shapeDocumentList<T extends { all?: unknown; results?: unknown[] 
   client: PaperlessClient,
   baseUrl: string,
   response: T,
+  contentOptions: ContentOptions,
 ): Promise<Omit<T, "all">> {
   const { all: _all, results, ...rest } = response;
   const docs = Array.isArray(results) ? (results as Record<string, unknown>[]) : [];
   const maps = await resolveNameMaps(client, docs);
   return {
     ...rest,
-    results: docs.map((doc) => shapeDocument(baseUrl, maps, doc)),
+    results: docs.map((doc) => shapeDocument(baseUrl, maps, doc, contentOptions)),
   } as Omit<T, "all">;
 }
 
 const fieldsParam = Type.Optional(
   Type.Array(Type.String(), {
     description:
-      "Sparse fieldset: only return these Document fields. Omit 'content' when you don't need the full OCR text -- it's included by default and can be large.",
+      "Sparse fieldset: only return these Document fields. Independent of `include_content` -- " +
+      "if you pass 'content' here, it's still dropped (or reduced to content_snippet) unless " +
+      "`include_content` is also true.",
+  }),
+);
+
+const includeContentParam = Type.Optional(
+  Type.Boolean({
+    description:
+      "Include each document's full OCR `content` field. Defaults to false -- content can be " +
+      "large and blow past your context budget across multiple documents. When false and a " +
+      "`search`/`query` term was given, a short `content_snippet` around the match is included " +
+      "instead. For a full read of one document's text without hitting this cap, prefer " +
+      "paperless_grep_document (pattern search within a document) or paperless_get_document_range " +
+      "(a specific line range) over setting this to true.",
   }),
 );
 
@@ -187,6 +277,7 @@ const listDocumentsParams = Type.Object({
     }),
   ),
   fields: fieldsParam,
+  include_content: includeContentParam,
 });
 
 export function createListDocumentsTool(
@@ -196,7 +287,11 @@ export function createListDocumentsTool(
     name: "paperless_list_documents",
     label: "List paperless-ngx documents",
     description:
-      "Search or filter documents in paperless-ngx. Results include each document's OCR content by default, so a separate get call usually isn't needed just to read text -- but for large result sets, pass `fields` to omit `content` and save tokens. correspondent/document_type/tag ids are automatically resolved to correspondent_name/document_type_name/tag_names alongside the ids.",
+      "Search or filter documents in paperless-ngx. OCR `content` is omitted by default (pass " +
+      "`include_content: true` to get it) -- when a `search`/`query` term was given, each result " +
+      "gets a short `content_snippet` around the match instead, enough to judge relevance without " +
+      "the full text. correspondent/document_type/tag ids are automatically resolved to " +
+      "correspondent_name/document_type_name/tag_names alongside the ids.",
     parameters: listDocumentsParams,
     execute: async (_toolCallId, params: Static<typeof listDocumentsParams>) => {
       const { client, baseUrl } = await handlePromise;
@@ -221,7 +316,11 @@ export function createListDocumentsTool(
           },
         }),
       );
-      return toToolResult(await shapeDocumentList(client, baseUrl, result));
+      const contentOptions: ContentOptions = {
+        includeContent: params.include_content ?? false,
+        snippetTerm: params.search ?? params.query,
+      };
+      return toToolResult(await shapeDocumentList(client, baseUrl, result, contentOptions));
     },
   };
 }
@@ -229,6 +328,7 @@ export function createListDocumentsTool(
 const getDocumentParams = Type.Object({
   id: Type.Integer({ description: "Document id." }),
   fields: fieldsParam,
+  include_content: includeContentParam,
 });
 
 export function createGetDocumentTool(handlePromise: Promise<PaperlessClientHandle>): AnyAgentTool {
@@ -236,7 +336,11 @@ export function createGetDocumentTool(handlePromise: Promise<PaperlessClientHand
     name: "paperless_get_document",
     label: "Get paperless-ngx document",
     description:
-      "Fetch a single document by id, including its OCR content and metadata. correspondent/document_type/tag ids are automatically resolved to correspondent_name/document_type_name/tag_names alongside the ids.",
+      "Fetch a single document by id and its metadata. OCR `content` is omitted by default -- " +
+      "pass `include_content: true` to get it, or prefer paperless_grep_document/" +
+      "paperless_get_document_range for a targeted excerpt of a long document. " +
+      "correspondent/document_type/tag ids are automatically resolved to " +
+      "correspondent_name/document_type_name/tag_names alongside the ids.",
     parameters: getDocumentParams,
     execute: async (_toolCallId, params: Static<typeof getDocumentParams>) => {
       const { client, baseUrl } = await handlePromise;
@@ -245,7 +349,8 @@ export function createGetDocumentTool(handlePromise: Promise<PaperlessClientHand
           params: { path: { id: params.id }, query: { fields: params.fields } },
         }),
       );
-      return toToolResult(await shapeSingleDocument(client, baseUrl, result));
+      const contentOptions: ContentOptions = { includeContent: params.include_content ?? false };
+      return toToolResult(await shapeSingleDocument(client, baseUrl, result, contentOptions));
     },
   };
 }
@@ -377,7 +482,172 @@ export function createUpdateDocumentTool(
           // document body, so fetch the current state to respond with.
           unwrap(await client.GET("/api/documents/{id}/", { params: { path: { id } } }));
 
-      return toToolResult(pickFields(fields, await shapeSingleDocument(client, baseUrl, result)));
+      // Unlike list/get, update's `fields` (via pickFields below) is the only
+      // content control here -- there's no separate include_content param,
+      // so content is left in for pickFields to keep or drop.
+      const updateContentOptions: ContentOptions = { includeContent: true };
+      return toToolResult(
+        pickFields(
+          fields,
+          await shapeSingleDocument(client, baseUrl, result, updateContentOptions),
+        ),
+      );
+    },
+  };
+}
+
+// Fetches only id+content for a document -- used by paperless_grep_document
+// and paperless_get_document_range, neither of which need the metadata
+// shapeSingleDocument resolves (correspondent/tag names, etc).
+async function fetchDocumentContent(client: PaperlessClient, id: number): Promise<string> {
+  const doc = unwrap(
+    await client.GET("/api/documents/{id}/", {
+      params: { path: { id }, query: { fields: ["id", "content"] } },
+    }),
+  );
+  return typeof doc.content === "string" ? doc.content : "";
+}
+
+const MAX_GREP_CONTEXT_LINES = 10;
+const DEFAULT_GREP_CONTEXT_LINES = 2;
+const MAX_GREP_MATCHES = 100;
+const DEFAULT_GREP_MATCHES = 20;
+
+const grepDocumentParams = Type.Object({
+  id: Type.Integer({ description: "Document id to search within." }),
+  pattern: Type.String({
+    description:
+      "Text or regular expression (JS syntax) to search for, evaluated against each line of the " +
+      "document's OCR content -- like `grep`.",
+  }),
+  ignore_case: Type.Optional(
+    Type.Boolean({ description: "Case-insensitive match. Defaults to true." }),
+  ),
+  context_lines: Type.Optional(
+    Type.Integer({
+      description: `Lines of context to include before and after each match, like grep -C. Defaults to ${DEFAULT_GREP_CONTEXT_LINES}, capped at ${MAX_GREP_CONTEXT_LINES}.`,
+    }),
+  ),
+  max_matches: Type.Optional(
+    Type.Integer({
+      description: `Maximum number of matches to return. Defaults to ${DEFAULT_GREP_MATCHES}, capped at ${MAX_GREP_MATCHES}.`,
+    }),
+  ),
+});
+
+export function createGrepDocumentTool(
+  handlePromise: Promise<PaperlessClientHandle>,
+): AnyAgentTool {
+  return {
+    name: "paperless_grep_document",
+    label: "Search within a paperless-ngx document",
+    description:
+      "Search one document's OCR content for a pattern (like `grep -n -C`) without pulling the " +
+      "whole document into context. Returns only matching lines plus surrounding context. Prefer " +
+      "this over paperless_get_document/paperless_list_documents with include_content=true when " +
+      "you're hunting for a specific detail (an amount, a policy number, a clause) inside a " +
+      "document you already know the id of.",
+    parameters: grepDocumentParams,
+    execute: async (_toolCallId, params: Static<typeof grepDocumentParams>) => {
+      const { client } = await handlePromise;
+      const content = await fetchDocumentContent(client, params.id);
+
+      let regex: RegExp;
+      try {
+        regex = new RegExp(params.pattern, (params.ignore_case ?? true) ? "i" : "");
+      } catch (err) {
+        throw new Error(
+          `paperless_grep_document: invalid pattern -- ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      const contextLines = Math.min(
+        Math.max(params.context_lines ?? DEFAULT_GREP_CONTEXT_LINES, 0),
+        MAX_GREP_CONTEXT_LINES,
+      );
+      const maxMatches = Math.min(
+        Math.max(params.max_matches ?? DEFAULT_GREP_MATCHES, 1),
+        MAX_GREP_MATCHES,
+      );
+
+      const lines = content.split("\n");
+      const matchingLineNumbers: number[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (regex.test(lines[i] ?? "")) matchingLineNumbers.push(i);
+      }
+
+      const matches = matchingLineNumbers.slice(0, maxMatches).map((i) => {
+        const start = Math.max(0, i - contextLines);
+        const end = Math.min(lines.length - 1, i + contextLines);
+        return {
+          line_number: i + 1,
+          line: lines[i] ?? "",
+          context: lines.slice(start, end + 1).join("\n"),
+        };
+      });
+
+      return toToolResult({
+        document_id: params.id,
+        pattern: params.pattern,
+        total_lines: lines.length,
+        total_matches: matchingLineNumbers.length,
+        matches,
+        truncated: matchingLineNumbers.length > matches.length,
+      });
+    },
+  };
+}
+
+const MAX_RANGE_LINES = 500;
+const DEFAULT_RANGE_LINES = 200;
+
+const getDocumentRangeParams = Type.Object({
+  id: Type.Integer({ description: "Document id." }),
+  start_line: Type.Optional(
+    Type.Integer({ description: "1-indexed starting line (inclusive). Defaults to 1." }),
+  ),
+  end_line: Type.Optional(
+    Type.Integer({
+      description:
+        `1-indexed ending line (inclusive). Defaults to start_line + ${DEFAULT_RANGE_LINES - 1}. ` +
+        `The span is capped at ${MAX_RANGE_LINES} lines regardless of what's requested.`,
+    }),
+  ),
+});
+
+export function createGetDocumentRangeTool(
+  handlePromise: Promise<PaperlessClientHandle>,
+): AnyAgentTool {
+  return {
+    name: "paperless_get_document_range",
+    label: "Get a line range from a paperless-ngx document",
+    description:
+      "Fetch a specific line range of a document's OCR content -- e.g. to read a section you " +
+      "located with paperless_grep_document or a content_snippet from paperless_list_documents. " +
+      "Cheaper than paperless_get_document/paperless_list_documents with include_content=true " +
+      "when you only need part of a long document.",
+    parameters: getDocumentRangeParams,
+    execute: async (_toolCallId, params: Static<typeof getDocumentRangeParams>) => {
+      const { client } = await handlePromise;
+      const content = await fetchDocumentContent(client, params.id);
+      const lines = content.split("\n");
+
+      const startLine = Math.max(1, params.start_line ?? 1);
+      const requestedEnd = params.end_line ?? startLine + DEFAULT_RANGE_LINES - 1;
+      const endLine = Math.max(
+        startLine,
+        Math.min(requestedEnd, startLine + MAX_RANGE_LINES - 1, lines.length),
+      );
+      const isEmptyRange = startLine > lines.length;
+      const slice = isEmptyRange ? [] : lines.slice(startLine - 1, endLine);
+
+      return toToolResult({
+        document_id: params.id,
+        start_line: startLine,
+        end_line: isEmptyRange ? startLine - 1 : endLine,
+        total_lines: lines.length,
+        content: slice.join("\n"),
+      });
     },
   };
 }
