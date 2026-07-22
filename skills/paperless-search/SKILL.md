@@ -5,7 +5,7 @@ description: "Search the user's paperless-ngx documents by full-text OCR query. 
 
 # Paperless Search
 
-Search the user's paperless-ngx documents by full-text OCR query, using the paperless-ngx plugin's tools (`paperless_list_documents`, `paperless_get_document`, `paperless_grep_document`, `paperless_get_document_range`, `paperless_list_correspondents`, `paperless_list_tags`, `paperless_list_document_types`). OCR `content` is opt-in on `paperless_list_documents`/`paperless_get_document` (omitted by default) — lean on search-result `content_snippet`s and `paperless_grep_document` instead of requesting full content.
+Search the user's paperless-ngx documents by full-text OCR query, using the paperless-ngx plugin's tools (`paperless_list_documents`, `paperless_get_document`, `paperless_grep_document`, `paperless_get_document_range`, `paperless_list_correspondents`, `paperless_list_tags`, `paperless_list_document_types`). OCR `content` is opt-in on `paperless_list_documents`/`paperless_get_document` (omitted by default) — lean on search-result `content_snippet`s and `paperless_grep_document` instead of requesting full content. This opt-in only saves *your* context budget: paperless-ngx still reads a document's full OCR content server-side regardless of what you ask for back.
 
 ## Triggers
 

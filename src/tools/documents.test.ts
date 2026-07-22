@@ -41,6 +41,21 @@ function setup(routes: Route[]) {
   return Promise.resolve({ client, baseUrl: BASE_URL });
 }
 
+// Like `setup`, but also hands back the underlying fetch mock so a test can
+// inspect the outgoing request (query params) rather than just the shaped
+// response.
+function setupWithSpy(routes: Route[]) {
+  const fetchMock = stubFetch(routes);
+  const client = createPaperlessClient({ baseUrl: BASE_URL, apiToken: "test-token" });
+  return { handle: Promise.resolve({ client, baseUrl: BASE_URL }), fetchMock };
+}
+
+function lastRequestUrl(fetchMock: ReturnType<typeof stubFetch>): URL {
+  const call = fetchMock.mock.calls.at(-1);
+  const request = call?.[0] as Request;
+  return new URL(request.url);
+}
+
 const documentsListRoute = (docs: Record<string, unknown>[]): Route => ({
   test: (pathname, method) => method === "GET" && pathname === "/api/documents/",
   handle: () => ({ count: docs.length, results: docs }),
@@ -124,6 +139,29 @@ describe("paperless_list_documents content policy", () => {
     expect(snippet.startsWith(FILLER_A.slice(0, 20))).toBe(true);
     expect(snippet.endsWith("…")).toBe(true);
   });
+
+  it("matches a wildcard Whoosh query fragment when building a snippet", async () => {
+    const handle = setup([
+      documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
+    ]);
+    const tool = createListDocumentsTool(handle);
+    // "INVOI*42" -- the literal wildcard would never match OCR text, but the
+    // "INVOI" fragment (before the `*`) is a real substring of MARKER.
+    const result = await tool.execute("call-1", { query: "INVOI*42" });
+    const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
+    const snippet = doc.content_snippet as string;
+    expect(snippet).toContain(MARKER);
+  });
+
+  it("adds `content` to the outgoing `fields` request when include_content is true", async () => {
+    const { handle, fetchMock } = setupWithSpy([
+      documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
+    ]);
+    const tool = createListDocumentsTool(handle);
+    await tool.execute("call-1", { fields: ["id", "title"], include_content: true });
+    const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
+    expect(fields?.split(",")).toEqual(expect.arrayContaining(["id", "title", "content"]));
+  });
 });
 
 describe("paperless_get_document content policy", () => {
@@ -146,6 +184,53 @@ describe("paperless_get_document content policy", () => {
     const result = await tool.execute("call-1", { id: 1, include_content: true });
     const doc = result.details as Record<string, unknown>;
     expect(doc.content).toBe(SAMPLE_CONTENT);
+  });
+
+  it("still returns content when include_content is true and fields omits it", async () => {
+    // Regression test: `fields` is forwarded to the API as a server-side
+    // sparse fieldset, so a `fields` list that omits "content" would
+    // otherwise silently starve `include_content: true` of any content to
+    // return, even though the fixture below has it.
+    const handle = setup([
+      documentGetRoute({ 1: { id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] } }),
+    ]);
+    const tool = createGetDocumentTool(handle);
+    const result = await tool.execute("call-1", {
+      id: 1,
+      fields: ["id", "title"],
+      include_content: true,
+    });
+    const doc = result.details as Record<string, unknown>;
+    expect(doc.content).toBe(SAMPLE_CONTENT);
+  });
+});
+
+describe("outgoing request serialization", () => {
+  it("list_documents sends `search` in the request query", async () => {
+    const { handle, fetchMock } = setupWithSpy([documentsListRoute([])]);
+    const tool = createListDocumentsTool(handle);
+    await tool.execute("call-1", { search: "invoice" });
+    expect(lastRequestUrl(fetchMock).searchParams.get("search")).toBe("invoice");
+  });
+
+  it("list_documents sends `fields` as given (without content) when include_content is false", async () => {
+    const { handle, fetchMock } = setupWithSpy([
+      documentsListRoute([{ id: 1, title: "Doc 1", tags: [] }]),
+    ]);
+    const tool = createListDocumentsTool(handle);
+    await tool.execute("call-1", { fields: ["id", "title"], include_content: false });
+    const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
+    expect(fields?.split(",")).toEqual(["id", "title"]);
+  });
+
+  it("get_document adds `content` to `fields` in the request when include_content is true", async () => {
+    const { handle, fetchMock } = setupWithSpy([
+      documentGetRoute({ 1: { id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] } }),
+    ]);
+    const tool = createGetDocumentTool(handle);
+    await tool.execute("call-1", { id: 1, fields: ["id", "title"], include_content: true });
+    const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
+    expect(fields?.split(",")).toEqual(expect.arrayContaining(["id", "title", "content"]));
   });
 });
 
@@ -222,6 +307,71 @@ describe("paperless_grep_document", () => {
       /invalid pattern/,
     );
   });
+
+  it("rejects patterns with too many repetition operators (ReDoS guard)", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
+    const tool = createGrepDocumentTool(handle);
+    const pathological = "a+".repeat(20);
+    await expect(tool.execute("call-1", { id: 1, pattern: pathological })).rejects.toThrow(
+      /too many repetition operators/,
+    );
+  });
+
+  it("rejects patterns longer than the length cap", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
+    const tool = createGrepDocumentTool(handle);
+    const tooLong = "a".repeat(501);
+    await expect(tool.execute("call-1", { id: 1, pattern: tooLong })).rejects.toThrow(
+      /longer than 500 characters/,
+    );
+  });
+
+  it("normalizes CRLF line endings before matching", async () => {
+    const crlfContent = GREP_CONTENT.split("\n").join("\r\n");
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: crlfContent } })]);
+    const tool = createGrepDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, pattern: "Policy Number" });
+    const details = result.details as {
+      total_matches: number;
+      matches: { line: string; context: string }[];
+    };
+    expect(details.total_matches).toBe(2);
+    expect(details.matches[0]?.line).toBe("Policy Number: ABC-123");
+    expect(details.matches[0]?.line).not.toContain("\r");
+    expect(details.matches[0]?.context).not.toContain("\r");
+  });
+
+  it("reports content_status: null and skips the search when content is missing", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: null } })]);
+    const tool = createGrepDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, pattern: "anything" });
+    const details = result.details as {
+      total_lines: number;
+      total_matches: number;
+      matches: unknown[];
+      content_status: string;
+    };
+    expect(details.content_status).toBe("null");
+    expect(details.total_lines).toBe(0);
+    expect(details.total_matches).toBe(0);
+    expect(details.matches).toEqual([]);
+  });
+
+  it("reports content_status: present when a match is found", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
+    const tool = createGrepDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, pattern: "Policy Number" });
+    expect((result.details as { content_status: string }).content_status).toBe("present");
+  });
+
+  it("reports content_status: empty when content is an empty string", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: "" } })]);
+    const tool = createGrepDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, pattern: "anything" });
+    const details = result.details as { content_status: string; total_matches: number };
+    expect(details.content_status).toBe("empty");
+    expect(details.total_matches).toBe(0);
+  });
 });
 
 describe("paperless_get_document_range", () => {
@@ -278,5 +428,36 @@ describe("paperless_get_document_range", () => {
     expect(details.start_line).toBe(1);
     expect(details.end_line).toBe(500);
     expect(details.content.split("\n")).toHaveLength(500);
+  });
+
+  it("normalizes CRLF line endings before slicing", async () => {
+    const crlfContent = rangeContent.split("\n").join("\r\n");
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: crlfContent } })]);
+    const tool = createGetDocumentRangeTool(handle);
+    const result = await tool.execute("call-1", { id: 1, start_line: 3, end_line: 5 });
+    const details = result.details as { content: string };
+    expect(details.content).toBe("Line 3\nLine 4\nLine 5");
+    expect(details.content).not.toContain("\r");
+  });
+
+  it("reports content_status: null and returns empty content when content is missing", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: null } })]);
+    const tool = createGetDocumentRangeTool(handle);
+    const result = await tool.execute("call-1", { id: 1 });
+    const details = result.details as {
+      total_lines: number;
+      content: string;
+      content_status: string;
+    };
+    expect(details.content_status).toBe("null");
+    expect(details.total_lines).toBe(0);
+    expect(details.content).toBe("");
+  });
+
+  it("reports content_status: present for a normal range", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: rangeContent } })]);
+    const tool = createGetDocumentRangeTool(handle);
+    const result = await tool.execute("call-1", { id: 1 });
+    expect((result.details as { content_status: string }).content_status).toBe("present");
   });
 });
