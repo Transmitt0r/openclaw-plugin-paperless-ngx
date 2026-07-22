@@ -9,7 +9,9 @@ import { resolveSecretRefValues } from "openclaw/plugin-sdk/secret-ref-runtime";
 import { Type } from "typebox";
 import { createPaperlessClient, type PaperlessClientHandle } from "./client.js";
 import {
+  createGetDocumentRangeTool,
   createGetDocumentTool,
+  createGrepDocumentTool,
   createListDocumentsTool,
   createUpdateDocumentTool,
 } from "./tools/documents.js";
@@ -81,6 +83,8 @@ const entry: OpenClawPluginDefinition = definePluginEntry({
     api.registerTool(createListDocumentsTool(handle));
     api.registerTool(createGetDocumentTool(handle));
     api.registerTool(createUpdateDocumentTool(handle));
+    api.registerTool(createGrepDocumentTool(handle));
+    api.registerTool(createGetDocumentRangeTool(handle));
     api.registerTool(createListTagsTool(handle));
     api.registerTool(createCreateTagTool(handle));
     api.registerTool(createListCorrespondentsTool(handle));

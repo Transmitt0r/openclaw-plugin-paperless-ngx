@@ -17,9 +17,10 @@ Use the paperless-ngx plugin's tools for everything — never make raw HTTP call
 
 ## Fetch inbox docs
 
-`paperless_list_documents` with `tag_id=<inbox tag id from pre-flight>`. Results already include each document's OCR `content` inline — no separate per-document fetch needed.
+`paperless_list_documents` with `tag_id=<inbox tag id from pre-flight>` and `include_content: true` — OCR `content` is opt-in and omitted by default, but ingest triage needs the full text of every inbox doc to classify it, so request it explicitly here.
 - Cap at 10 docs/run to keep response time reasonable
 - If 0 inbox docs → report "Inbox clear" and stop
+- If a document's OCR content is garbled, unclear, or you need to double-check one detail, use `paperless_grep_document` (search for a keyword like a date or amount) or `paperless_get_document_range` (read a specific line range) instead of re-fetching the whole document with `include_content`
 
 ## Per document, decide
 
