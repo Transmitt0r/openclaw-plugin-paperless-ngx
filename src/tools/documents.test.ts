@@ -162,6 +162,35 @@ describe("paperless_list_documents content policy", () => {
     const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
     expect(fields?.split(",")).toEqual(expect.arrayContaining(["id", "title", "content"]));
   });
+
+  it("keeps an emoji intact when it straddles a snippet boundary", async () => {
+    // An emoji is a UTF-16 surrogate pair; place it so the snippet's
+    // char-count boundary (SNIPPET_CONTEXT_CHARS = 160 after the match)
+    // would fall between its two halves if slicing weren't surrogate-aware.
+    const emoji = "\u{1F600}";
+    const fillerLen = 159 - MARKER.length;
+    const content = `${MARKER}${"x".repeat(fillerLen)}${emoji}${"y".repeat(50)}`;
+    const handle = setup([documentsListRoute([{ id: 1, title: "Doc 1", content, tags: [] }])]);
+    const tool = createListDocumentsTool(handle);
+    const result = await tool.execute("call-1", { search: MARKER });
+    const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
+    const snippet = doc.content_snippet as string;
+    expect(snippet).toContain(emoji);
+    expect(snippet).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    expect(snippet).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+
+  it("keeps an emoji intact when it straddles the leading-excerpt boundary", async () => {
+    const emoji = "\u{1F600}";
+    const fillerLen = 319;
+    const content = `${"x".repeat(fillerLen)}${emoji}${"y".repeat(50)}`;
+    const handle = setup([documentsListRoute([{ id: 1, title: "Doc 1", content, tags: [] }])]);
+    const tool = createListDocumentsTool(handle);
+    const result = await tool.execute("call-1", { search: "absent-term" });
+    const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
+    const snippet = doc.content_snippet as string;
+    expect(snippet).toContain(emoji);
+  });
 });
 
 describe("paperless_get_document content policy", () => {
@@ -372,6 +401,38 @@ describe("paperless_grep_document", () => {
     expect(details.content_status).toBe("empty");
     expect(details.total_matches).toBe(0);
   });
+
+  it("returns zero matches (not an error) when the pattern matches nothing", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
+    const tool = createGrepDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, pattern: "no-such-term-xyz" });
+    const details = result.details as {
+      content_status: string;
+      total_matches: number;
+      matches: unknown[];
+      truncated: boolean;
+    };
+    expect(details.content_status).toBe("present");
+    expect(details.total_matches).toBe(0);
+    expect(details.matches).toEqual([]);
+    expect(details.truncated).toBe(false);
+  });
+
+  it("handles a single very long line with no newlines", async () => {
+    const longLine = `prefix ${"word ".repeat(2000)}needle ${"word ".repeat(2000)}suffix`;
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: longLine } })]);
+    const tool = createGrepDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, pattern: "needle" });
+    const details = result.details as {
+      total_lines: number;
+      total_matches: number;
+      matches: { line_number: number; line: string }[];
+    };
+    expect(details.total_lines).toBe(1);
+    expect(details.total_matches).toBe(1);
+    expect(details.matches[0]?.line_number).toBe(1);
+    expect(details.matches[0]?.line).toBe(longLine);
+  });
 });
 
 describe("paperless_get_document_range", () => {
@@ -459,5 +520,30 @@ describe("paperless_get_document_range", () => {
     const tool = createGetDocumentRangeTool(handle);
     const result = await tool.execute("call-1", { id: 1 });
     expect((result.details as { content_status: string }).content_status).toBe("present");
+  });
+
+  it("throws a clear error on an inverted range (end_line before start_line)", async () => {
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: rangeContent } })]);
+    const tool = createGetDocumentRangeTool(handle);
+    await expect(tool.execute("call-1", { id: 1, start_line: 10, end_line: 2 })).rejects.toThrow(
+      /end_line \(2\) is before start_line \(10\)/,
+    );
+  });
+
+  it("handles a single very long line with no newlines", async () => {
+    const longLine = "word ".repeat(5000).trim();
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: longLine } })]);
+    const tool = createGetDocumentRangeTool(handle);
+    const result = await tool.execute("call-1", { id: 1 });
+    const details = result.details as {
+      start_line: number;
+      end_line: number;
+      total_lines: number;
+      content: string;
+    };
+    expect(details.total_lines).toBe(1);
+    expect(details.start_line).toBe(1);
+    expect(details.end_line).toBe(1);
+    expect(details.content).toBe(longLine);
   });
 });

@@ -68,6 +68,20 @@ type ContentOptions = {
 
 const SNIPPET_CONTEXT_CHARS = 160;
 
+// `String.slice` operates on UTF-16 code units, so a boundary computed by
+// character count can land inside a surrogate pair (emoji, some CJK) and
+// split it into two unpaired/replacement-rendering halves. These nudge a
+// slice boundary outward by one unit rather than through it when that
+// happens, so snippet edges never bisect a code point.
+function backAwayFromLowSurrogate(str: string, index: number): number {
+  const code = str.charCodeAt(index);
+  return code >= 0xdc00 && code <= 0xdfff ? index - 1 : index;
+}
+function forwardPastHighSurrogate(str: string, index: number): number {
+  const code = str.charCodeAt(index - 1);
+  return code >= 0xd800 && code <= 0xdbff ? index + 1 : index;
+}
+
 // Best-effort preview around the first place `term` occurs in `content`.
 // `term` may be a `search` string (free text) or a `query` string
 // (paperless-ngx's Whoosh syntax, e.g. `correspondent:"Foo" AND type:Invoice`)
@@ -77,10 +91,11 @@ const SNIPPET_CONTEXT_CHARS = 160;
 // not content) or when `term` is omitted.
 function extractSnippet(content: string, term: string | undefined): string {
   const trimmed = content.trim();
-  const leadingExcerpt = () =>
-    trimmed.length > SNIPPET_CONTEXT_CHARS * 2
-      ? `${trimmed.slice(0, SNIPPET_CONTEXT_CHARS * 2)}…`
-      : trimmed;
+  const leadingExcerpt = () => {
+    if (trimmed.length <= SNIPPET_CONTEXT_CHARS * 2) return trimmed;
+    const cut = forwardPastHighSurrogate(trimmed, SNIPPET_CONTEXT_CHARS * 2);
+    return `${trimmed.slice(0, cut)}…`;
+  };
 
   if (!term) return leadingExcerpt();
 
@@ -106,8 +121,11 @@ function extractSnippet(content: string, term: string | undefined): string {
   }
   if (matchIndex === -1) return leadingExcerpt();
 
-  const start = Math.max(0, matchIndex - SNIPPET_CONTEXT_CHARS);
-  const end = Math.min(content.length, matchIndex + SNIPPET_CONTEXT_CHARS);
+  const start = backAwayFromLowSurrogate(content, Math.max(0, matchIndex - SNIPPET_CONTEXT_CHARS));
+  const end = forwardPastHighSurrogate(
+    content,
+    Math.min(content.length, matchIndex + SNIPPET_CONTEXT_CHARS),
+  );
   const prefix = start > 0 ? "…" : "";
   const suffix = end < content.length ? "…" : "";
   return `${prefix}${content.slice(start, end).trim()}${suffix}`;
@@ -724,6 +742,13 @@ export function createGetDocumentRangeTool(
     execute: async (_toolCallId, params: Static<typeof getDocumentRangeParams>) => {
       const { client } = await handlePromise;
       const startLine = Math.max(1, params.start_line ?? 1);
+
+      if (params.end_line !== undefined && params.end_line < startLine) {
+        throw new Error(
+          `paperless_get_document_range: end_line (${params.end_line}) is before start_line ` +
+            `(${startLine}) -- pass an end_line greater than or equal to start_line.`,
+        );
+      }
 
       const rawContent = await fetchDocumentContent(client, params.id);
       if (rawContent === null) {
