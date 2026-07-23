@@ -251,6 +251,12 @@ sequenceDiagram
 All new config lives under one optional key; **absent = feature off = zero behavior
 change** for existing installs (semver: `feat`, minor).
 
+**Decision: the default embedding provider is `local`.** The host's local provider runs
+EmbeddingGemma-300m (`hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF`, the SDK's
+`DEFAULT_LOCAL_MODEL`) in-process via node-llama-cpp: a ~300 MB quantized multilingual
+encoder — no GPU, no API key, no OCR text leaving the machine. Remote providers remain a
+config change away for users who want higher throughput.
+
 ```jsonc
 {
   "plugins": {
@@ -262,12 +268,14 @@ change** for existing installs (semver: `feat`, minor).
           "semanticSearch": {
             "enabled": true,
             "embedding": {
-              "provider": "local",       // any host embedding provider id: local, openai, gemini, voyage, …
-              "model": "…",              // optional; provider default otherwise
+              "provider": "local",       // default; any host embedding provider id works: local, openai, gemini, voyage, …
+              "model": "…",              // optional; defaults to the host's DEFAULT_LOCAL_MODEL (EmbeddingGemma-300m Q8_0)
+              "dimensions": 256,         // default 256 via Matryoshka truncation (see hardware sizing)
               "apiKey": { /* SecretRef, for remote providers, reusing the existing resolveApiToken pattern */ }
             },
             "chunking": { "tokens": 400, "overlap": 80 },
-            "sync": { "intervalMinutes": 15 },
+            "sync": { "intervalMinutes": 15, "concurrency": 1 },
+            "idleUnloadMinutes": 10,     // release the local model's memory when unused
             "storeChunkText": true       // false = no OCR text at rest in the index (see below)
           }
         }
@@ -281,15 +289,58 @@ Provider resolution goes through `getEmbeddingProvider(id, api.config)`, so anyt
 host supports — including embedding providers registered by *other* plugins — works here
 without this plugin knowing about it.
 
+## Hardware sizing — target: 2 vCPU / 4 GB RAM, CPU-only
+
+The reference deployment for this plugin is a small home-server box (2 vCPU, 4 GB RAM,
+no GPU) that also runs the OpenClaw gateway. The design has to fit that budget, not a
+workstation. Numbers below are for the default local model (EmbeddingGemma-300m, Q8_0).
+
+**Memory.**
+- Model weights + inference context: roughly 400–500 MB RSS while loaded. That is
+  affordable within 4 GB but not free, so the provider is loaded **lazily** (first embed
+  call) and released via the provider's `close()` after `idleUnloadMinutes` without use.
+  Steady state with no search activity: ~0 extra memory. The cost is a cold-start of a
+  few seconds on the first query after idle — acceptable for an agent tool call, and the
+  status tool reports whether the model is currently resident.
+- Index size: EmbeddingGemma is Matryoshka-trained, so vectors can be truncated to 256
+  dims with only marginal quality loss. **Default `dimensions: 256`** (float32 → ~1 KB
+  per chunk instead of ~3 KB at the native 768). A 5 000-document archive at ~15 chunks
+  per document is ~75 000 chunks → ~75 MB vector table + text/FTS, comfortably fine on
+  disk, and a full brute-force KNN scan of 75 000×256 floats is tens of milliseconds on
+  this CPU — no ANN index needed at personal-archive scale.
+
+**CPU / throughput.**
+- Embedding a ~400-token chunk is one encoder forward pass; on 2 CPU threads expect
+  order-of **1–3 chunks/second**. The **initial** index of a large archive is therefore
+  hours (e.g. ~75 000 chunks ≈ 8–20 h) — that's fine *if and only if* it is treated as a
+  resumable background pass, which the checkpointing design already guarantees. After
+  that, incremental syncs touch only changed documents (a handful of seconds per newly
+  consumed document).
+- To keep the gateway responsive while indexing on 2 vCPUs: `sync.concurrency` defaults
+  to **1** (one document at a time, serial `embedBatch` calls) and the sync loop yields
+  between documents. Indexing throughput is deliberately sacrificed for interactivity.
+- **Newest-first backfill:** the initial pass processes documents in `-modified` order,
+  so recently added/edited documents become semantically searchable within minutes of
+  enabling the feature, while the long tail of old archives fills in behind. Combined
+  with honest `index_status` in query results ("62 % indexed, backfill running"), the
+  feature is useful long before the first full pass completes.
+- Query cost is one single-chunk embed (sub-second warm) + the KNN/FTS scan — negligible.
+
+**What this rules out:** larger local models (e.g. 0.6 B+ embedding models) and
+re-embedding the corpus casually. The index-identity rebuild on model change is correct
+but expensive here — another reason the default model is pinned and stable rather than
+"whatever the host's latest default is" (the identity check uses the provider's
+`EmbeddingProviderIndexIdentity`, so an intentional model change still rebuilds cleanly).
+
 ## Privacy & security
 
 This corpus is people's tax records, medical letters, and contracts, so the defaults must
 be conservative:
 
 - **Remote embedding providers ship OCR text to a third party.** The README must say so
-  explicitly, and the recommended default is the host's **local** embedding provider
-  (node-llama-cpp; no data leaves the machine) — semantic search then adds no new data
-  egress at all.
+  explicitly. The default is the host's **local** embedding provider (EmbeddingGemma-300m
+  via node-llama-cpp; no data leaves the machine) — semantic search then adds no new data
+  egress at all. Remote providers are strictly opt-in.
 - **`storeChunkText: false`** mode keeps only hashes, line spans, and vectors at rest;
   snippets are then fetched on demand from paperless per result (a few extra API calls per
   query) and the FTS leg is disabled. For users whose threat model includes the OpenClaw
@@ -308,8 +359,9 @@ be conservative:
 | Node runtime lacks `node:sqlite` / sqlite-vec fails to load | Semantic tools register but return a clear "unavailable on this runtime" error; the rest of the plugin is unaffected. (`requireNodeSqlite` already produces the right error; note `engines` allows Node 20, where `node:sqlite` is missing.) |
 | Embedding provider down mid-sync | Sync aborts without advancing the checkpoint; index keeps serving the last good state; status tool reports the error. |
 | paperless-ngx unreachable | Query path still works (index is local); results carry `index_status` staleness. |
-| Model/provider changed in config | Index identity mismatch detected at startup → full rebuild (embedding cache makes unchanged-provider rebuilds cheap; model changes are inherently full-cost). |
-| Huge archives (tens of thousands of docs) | First index is the only expensive pass and is resumable; per-sync cost afterwards is proportional to changed docs. `embedBatch` + concurrency caps keep pressure bounded. |
+| Model/provider changed in config | Index identity mismatch detected at startup → full rebuild (embedding cache makes unchanged-provider rebuilds cheap; model changes are inherently full-cost — see hardware sizing). |
+| Huge archives (tens of thousands of docs) | First index is the only expensive pass; it is resumable, runs newest-first, and reports progress via `index_status`. Per-sync cost afterwards is proportional to changed docs. `sync.concurrency: 1` keeps the 2-vCPU gateway responsive throughout. |
+| Memory pressure on a 4 GB box | Local model is lazy-loaded and unloaded after `idleUnloadMinutes`; steady-state overhead without activity is just the SQLite file. |
 
 ## Testing
 
@@ -351,14 +403,21 @@ with interval sync + deletion sweep, `storeChunkText: false` mode.
 - Writing anything back to paperless-ngx from the semantic layer.
 - A delete tool (unchanged from the plugin's existing stance).
 
+## Resolved decisions
+
+1. **Default embedding provider: `local`**, pinned to the host's default
+   EmbeddingGemma-300m Q8_0 GGUF — CPU-only friendly, multilingual (matters for mixed
+   German/English archives), no data egress. Sized for a 2 vCPU / 4 GB reference box; see
+   the hardware-sizing section.
+2. **Default vector dimensions: 256** (Matryoshka truncation) to keep index size and KNN
+   scan cost proportionate to that hardware.
+
 ## Open questions
 
-1. Default embedding provider: hard-default to `local`, or require an explicit choice so
-   users consciously pick the privacy/quality trade-off? (Proposal: default `local`.)
-2. Should hybrid mode's keyword leg use local FTS5 (self-contained, works offline) or
+1. Should hybrid mode's keyword leg use local FTS5 (self-contained, works offline) or
    paperless's Whoosh search fused at query time (no text at rest, but couples query
    latency to paperless)? (Proposal: FTS5, with Whoosh fusion considered for
    `storeChunkText: false` mode.)
-3. Interval sync vs. reacting to paperless's document-consumption webhooks (paperless
+2. Interval sync vs. reacting to paperless's document-consumption webhooks (paperless
    supports outbound webhooks via workflows) — webhooks would need `registerHttpRoute`
    and reachable ingress; polling is the safe default.
