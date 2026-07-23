@@ -2,6 +2,8 @@ import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { type Static, Type } from "typebox";
 import type { PaperlessClient, PaperlessClientHandle } from "../client.js";
 import { toToolResult, unwrap } from "../client.js";
+import type { SemanticSearchHandle } from "../semantic/handle.js";
+import type { SemanticMatch } from "../semantic/types.js";
 import { clampPageSize, MAX_PAGE_SIZE, paginationParams } from "./pagination.js";
 import { fetchNameMap } from "./relations.js";
 
@@ -262,59 +264,149 @@ async function shapeDocumentList<T extends { all?: unknown; results?: unknown[] 
 
 // -- Semantic search integration seam --
 //
-// A separate semantic/embeddings-based (RAG) search backend for this
-// document corpus is being built in parallel -- its own service, not part
-// of paperless-ngx's own REST API. paperless_search_documents is meant to
-// become hybrid (lexical + semantic) once that backend exists, but the
-// choice between search *strategies* is never exposed to the model as a
-// param or a separate tool: we've directly observed this model not
-// reliably preferring a better tool/option even when told to (both in a
-// tool's own description and in a skill's explicit procedure), so a design
-// that relies on the model choosing "semantic vs. lexical" per query would
-// just relocate that same failure. Hybrid ranking has to happen here,
-// silently, folded into the one `search` behavior the model already knows.
+// A plugin-owned semantic/embeddings-based vector index for this document
+// corpus lives in src/semantic/ -- its own local SQLite+sqlite-vec store,
+// not part of paperless-ngx's own REST API (paperless-ngx exposes no
+// retrieval-primitive API of its own). paperless_search_documents
+// is hybrid (lexical + semantic) internally, but the choice between search
+// *strategies* is never exposed to the model as a param or a separate
+// tool: we've directly observed this model not reliably preferring a
+// better tool/option even when told to (both in a tool's own description
+// and in a skill's explicit procedure), so a design that relies on the
+// model choosing "semantic vs. lexical" per query would just relocate that
+// same failure. Hybrid ranking happens here, silently, folded into the one
+// `search` behavior the model already knows.
 //
-// Until the backend exists, `fetchSemanticMatches` is a no-op stub and
-// paperless_search_documents behaves exactly as lexical-only search always
-// has.
-type SemanticMatch = {
-  documentId: number;
-  snippet: string;
-  score: number;
-};
+// Both fetchSemanticMatches and mergeSemanticMatches fail open by
+// construction: fetchSemanticMatches's own handle.search() never throws
+// (see src/semantic/search.ts), and the try/catch below is a second,
+// belt-and-suspenders layer against a bug in that contract -- either way,
+// paperless_search_documents must never fail or block meaningfully longer
+// than a bounded timeout because the semantic side is unhealthy.
 
-// TODO(RAG): wire this up to the semantic search backend once it exists.
-// Contract: given the same free-text term the lexical search used, return
-// ranked matches with a relevance-ordered snippet per document, capped at
-// `limit`. Must fail open (return `[]`) rather than throw if the backend is
-// slow or unavailable -- paperless_search_documents should never fail or
-// block because the semantic side is unhealthy.
+// Given the same free-text term the lexical search used, returns ranked
+// matches with a relevance-ordered snippet per document, capped at
+// `limit`. `handlePromise` resolves once (like PaperlessClientHandle) and
+// is reused for every call; it always resolves to *some* handle --
+// `available: false` when the semantic backend couldn't come up (disabled,
+// Node runtime without node:sqlite, sqlite-vec failed to load, no
+// embedding provider registered, ...) -- never rejects.
 async function fetchSemanticMatches(
-  _searchTerm: string | undefined,
-  _limit: number,
+  handlePromise: Promise<SemanticSearchHandle>,
+  searchTerm: string | undefined,
+  limit: number,
 ): Promise<SemanticMatch[]> {
-  return [];
+  try {
+    const handle = await handlePromise;
+    return await handle.search(searchTerm, limit);
+  } catch {
+    return [];
+  }
 }
 
-// Folds semantic matches into the lexical result set by document id. A
-// document present in both gets its `content_snippet` upgraded to whichever
-// side found the more relevant excerpt (today: always the lexical one,
-// since fetchSemanticMatches never returns anything).
-//
-// TODO(RAG): once fetchSemanticMatches is real, this also needs to handle
-// semantic-only hits -- documents that matched semantically but weren't in
-// the lexical page -- which requires fetching and shaping those documents
-// from paperless-ngx before they can be appended here.
-function mergeSemanticMatches(
+// Reciprocal Rank Fusion constant. 60 is the value from the original RRF
+// paper (Cormack et al., 2009) and the de facto default everywhere it's
+// used since; this plugin has no tuning signal of its own to justify
+// deviating from it.
+const RRF_K = 60;
+
+// Folds semantic matches into the lexical result set by document id, then
+// fuses the two independently-ordered rank lists via Reciprocal Rank
+// Fusion. RRF over a raw score blend because the two scores live on
+// incomparable scales: paperless-ngx's Whoosh relevance score is never
+// even exposed to us (only result *order*), while the semantic side is a
+// cosine similarity -- RRF only needs rank position from each side, so it
+// sidesteps having to normalize/weight two scores that mean different
+// things. A document present in both lists gets its `content_snippet`
+// upgraded to the semantic side's excerpt (the more targeted one, since it
+// was chosen by similarity to the query rather than by containing the
+// literal search term); a document that only matched semantically is
+// fetched (batched, mirroring fetchNameMap's id__in batching) and shaped
+// identically to lexical results before being folded in. The merged list
+// is capped at `limit` (the caller's page_size) so a genuinely-better
+// semantic-only hit can displace a weak lexical-only tail entry within the
+// same page budget, without the tool's response growing past what the
+// caller asked for.
+async function mergeSemanticMatches(
+  client: PaperlessClient,
+  baseUrl: string,
   documents: Record<string, unknown>[],
   semanticMatches: SemanticMatch[],
-): Record<string, unknown>[] {
+  limit: number,
+  fields: string[] | undefined,
+): Promise<Record<string, unknown>[]> {
   if (semanticMatches.length === 0) return documents;
-  const byId = new Map(semanticMatches.map((match) => [match.documentId, match]));
-  return documents.map((doc) => {
-    const match = typeof doc.id === "number" ? byId.get(doc.id) : undefined;
+
+  const lexicalRankById = new Map<number, number>();
+  for (const [index, doc] of documents.entries()) {
+    if (typeof doc.id === "number") lexicalRankById.set(doc.id, index + 1);
+  }
+  const semanticById = new Map(semanticMatches.map((match) => [match.documentId, match]));
+  const semanticRankById = new Map<number, number>();
+  for (const [index, match] of semanticMatches.entries()) {
+    semanticRankById.set(match.documentId, index + 1);
+  }
+
+  const missingIds = semanticMatches
+    .map((match) => match.documentId)
+    .filter((id) => !lexicalRankById.has(id));
+
+  let semanticOnlyDocs: Record<string, unknown>[] = [];
+  if (missingIds.length > 0) {
+    const result = unwrap(
+      await client.GET("/api/documents/", {
+        params: {
+          query: {
+            id__in: missingIds,
+            page_size: Math.min(missingIds.length, MAX_PAGE_SIZE),
+            fields,
+          },
+        },
+      }),
+    );
+    const rawDocs = Array.isArray(result.results)
+      ? (result.results as Record<string, unknown>[])
+      : [];
+    const maps = await resolveNameMaps(client, rawDocs);
+    semanticOnlyDocs = rawDocs.map((doc) => {
+      const match = typeof doc.id === "number" ? semanticById.get(doc.id) : undefined;
+      const shaped = shapeDocument(baseUrl, maps, doc, {
+        includeContent: false,
+        snippetTerm: undefined,
+      });
+      return match ? { ...shaped, content_snippet: match.snippet } : shaped;
+    });
+  }
+
+  const upgradedLexical = documents.map((doc) => {
+    const match = typeof doc.id === "number" ? semanticById.get(doc.id) : undefined;
     return match ? { ...doc, content_snippet: match.snippet } : doc;
   });
+
+  const rrfScore = (id: number | undefined): number => {
+    if (id === undefined) return 0;
+    const lexicalRank = lexicalRankById.get(id);
+    const semanticRank = semanticRankById.get(id);
+    let score = 0;
+    if (lexicalRank !== undefined) score += 1 / (RRF_K + lexicalRank);
+    if (semanticRank !== undefined) score += 1 / (RRF_K + semanticRank);
+    return score;
+  };
+
+  return (
+    [...upgradedLexical, ...semanticOnlyDocs]
+      .map((doc, index) => ({
+        doc,
+        index,
+        score: rrfScore(typeof doc.id === "number" ? doc.id : undefined),
+      }))
+      // Stable tie-break on original position so two documents with the same
+      // fused score (e.g. two semantic-only misses, score 0) don't reorder
+      // nondeterministically between calls.
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, limit)
+      .map(({ doc }) => doc)
+  );
 }
 
 // Shared by get/update's `fields` params. `content` is never returned raw by
@@ -388,6 +480,7 @@ const searchDocumentsParams = Type.Object({
 
 export function createSearchDocumentsTool(
   handlePromise: Promise<PaperlessClientHandle>,
+  semanticHandlePromise: Promise<SemanticSearchHandle>,
 ): AnyAgentTool {
   return {
     name: "paperless_search_documents",
@@ -431,9 +524,26 @@ export function createSearchDocumentsTool(
       };
       const shaped = await shapeDocumentList(client, baseUrl, result, contentOptions);
 
-      const semanticMatches = await fetchSemanticMatches(params.search, pageSize ?? MAX_PAGE_SIZE);
+      // Only ever embedded/matched against `search` (the free-text lexical
+      // term), never `query` (paperless-ngx's Whoosh syntax) -- deliberate,
+      // see fetchSemanticMatches's own doc comment above. `params.search`
+      // is frequently undefined for pure filter/browse calls, in which
+      // case handle.search() no-ops to `[]` without an embedding call.
+      const limit = pageSize ?? MAX_PAGE_SIZE;
+      const semanticMatches = await fetchSemanticMatches(
+        semanticHandlePromise,
+        params.search,
+        limit,
+      );
       const results = Array.isArray(shaped.results)
-        ? mergeSemanticMatches(shaped.results as Record<string, unknown>[], semanticMatches)
+        ? await mergeSemanticMatches(
+            client,
+            baseUrl,
+            shaped.results as Record<string, unknown>[],
+            semanticMatches,
+            limit,
+            params.fields,
+          )
         : shaped.results;
 
       return toToolResult({ ...shaped, results });

@@ -16,6 +16,19 @@
       "apiToken": {
         "type": ["string", "object"],
         "description": "paperless-ngx API token, as a plain string or a SecretRef object"
+      },
+      "semanticSearch": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable the local semantic search index that hybridizes paperless_search_documents' `search` results. Defaults to true; the plugin still fails open to lexical-only search if the runtime/environment can't support it (e.g. Node <22.5, no node:sqlite) even when this is left enabled."
+          },
+          "indexPath": {
+            "type": "string",
+            "description": "Filesystem path for the plugin-owned SQLite+sqlite-vec index file. Defaults under ~/.openclaw/plugins/paperless-ngx/. The file is fully rebuildable from paperless-ngx content, so it never needs its own backup strategy beyond copying this one file."
+          }
+        }
       }
     }
   },

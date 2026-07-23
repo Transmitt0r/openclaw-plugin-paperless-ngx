@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPaperlessClient } from "../client.js";
+import type { SemanticSearchHandle } from "../semantic/handle.js";
+import type { SemanticMatch } from "../semantic/types.js";
 import {
   createGetDocumentTool,
   createReadDocumentTool,
@@ -7,6 +9,27 @@ import {
   createSearchDocumentsTool,
   createUpdateDocumentTool,
 } from "./documents.js";
+
+// Every test not specifically about the semantic hybrid merge uses this --
+// `available: false` with an empty search result is exactly what a real
+// handle resolves to when the backend couldn't come up (see
+// src/semantic/handle.ts's unavailableHandle), so these tests exercise the
+// same fail-open path paperless_search_documents falls back to in practice.
+function noSemanticHandle(): Promise<SemanticSearchHandle> {
+  return Promise.resolve({
+    available: false,
+    search: async () => [],
+    dispose: async () => {},
+  });
+}
+
+function fakeSemanticHandle(matches: SemanticMatch[]): Promise<SemanticSearchHandle> {
+  return Promise.resolve({
+    available: true,
+    search: async () => matches,
+    dispose: async () => {},
+  });
+}
 
 const BASE_URL = "https://paperless.example.com";
 
@@ -94,7 +117,7 @@ describe("paperless_search_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     const result = await tool.execute("call-1", {});
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content).toBeUndefined();
@@ -111,7 +134,7 @@ describe("paperless_search_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     const result = await tool.execute("call-1", { fields: ["id", "title", "content"] });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content).toBeUndefined();
@@ -121,7 +144,7 @@ describe("paperless_search_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     const result = await tool.execute("call-1", { search: MARKER });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content).toBeUndefined();
@@ -134,7 +157,7 @@ describe("paperless_search_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     const result = await tool.execute("call-1", { query: `content:"${MARKER}" AND type:Invoice` });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content_snippet as string).toContain(MARKER);
@@ -144,7 +167,7 @@ describe("paperless_search_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     const result = await tool.execute("call-1", { search: "totally-absent-term" });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content).toBeUndefined();
@@ -157,7 +180,7 @@ describe("paperless_search_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     // "INVOI*42" -- the literal wildcard would never match OCR text, but the
     // "INVOI" fragment (before the `*`) is a real substring of MARKER.
     const result = await tool.execute("call-1", { query: "INVOI*42" });
@@ -174,7 +197,7 @@ describe("paperless_search_documents content policy", () => {
     const fillerLen = 159 - MARKER.length;
     const content = `${MARKER}${"x".repeat(fillerLen)}${emoji}${"y".repeat(50)}`;
     const handle = setup([documentsListRoute([{ id: 1, title: "Doc 1", content, tags: [] }])]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     const result = await tool.execute("call-1", { search: MARKER });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     const snippet = doc.content_snippet as string;
@@ -188,22 +211,158 @@ describe("paperless_search_documents content policy", () => {
     const fillerLen = 319;
     const content = `${"x".repeat(fillerLen)}${emoji}${"y".repeat(50)}`;
     const handle = setup([documentsListRoute([{ id: 1, title: "Doc 1", content, tags: [] }])]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     const result = await tool.execute("call-1", { search: "absent-term" });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     const snippet = doc.content_snippet as string;
     expect(snippet).toContain(emoji);
   });
 
-  it("returns lexical results unchanged (semantic search backend is a stub for now)", async () => {
+  it("returns lexical results unchanged when the semantic backend is unavailable", async () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     const result = await tool.execute("call-1", { search: MARKER });
     const results = (result.details as { results: Record<string, unknown>[] }).results;
     expect(results).toHaveLength(1);
     expect(results[0]?.id).toBe(1);
+  });
+});
+
+describe("paperless_search_documents semantic hybrid merge", () => {
+  it("upgrades content_snippet for a lexical document that also matched semantically", async () => {
+    const handle = setup([
+      documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
+    ]);
+    const semantic = fakeSemanticHandle([
+      { documentId: 1, snippet: "a more targeted semantic excerpt", score: 0.9 },
+    ]);
+    const tool = createSearchDocumentsTool(handle, semantic);
+    const result = await tool.execute("call-1", { search: MARKER });
+    const results = (result.details as { results: Record<string, unknown>[] }).results;
+    expect(results).toHaveLength(1);
+    expect(results[0]?.content_snippet).toBe("a more targeted semantic excerpt");
+  });
+
+  it("fetches, shapes, and folds in a semantic-only document not in the lexical page", async () => {
+    // One route, branching on id__in -- the batched semantic-only fetch
+    // (id__in=2) needs a different fixture than the main search call.
+    const route = {
+      test: (pathname: string, method: string) =>
+        method === "GET" && pathname === "/api/documents/",
+      handle: (request: Request) => {
+        const url = new URL(request.url);
+        if (url.searchParams.has("id__in")) {
+          return { count: 1, results: [{ id: 2, title: "Doc 2", content: "unrelated", tags: [] }] };
+        }
+        return {
+          count: 1,
+          results: [{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }],
+        };
+      },
+    };
+    const handle = setup([route]);
+    const semantic = fakeSemanticHandle([
+      { documentId: 2, snippet: "semantic-only hit", score: 0.95 },
+    ]);
+    const tool = createSearchDocumentsTool(handle, semantic);
+    const result = await tool.execute("call-1", { search: MARKER });
+    const results = (result.details as { results: Record<string, unknown>[] }).results;
+
+    expect(results.map((doc) => doc.id)).toEqual(expect.arrayContaining([1, 2]));
+    const semanticOnlyDoc = results.find((doc) => doc.id === 2);
+    expect(semanticOnlyDoc?.content_snippet).toBe("semantic-only hit");
+    // Shaped the same way lexical results are -- gets a `url` into the web UI.
+    expect(semanticOnlyDoc?.url).toBe(`${BASE_URL}/documents/2/details`);
+  });
+
+  it("ranks a strong semantic-only hit above a weak lexical tail match (RRF)", async () => {
+    const lexicalDocs = Array.from({ length: 5 }, (_, i) => ({
+      id: i + 1,
+      title: `Doc ${i + 1}`,
+      content: SAMPLE_CONTENT,
+      tags: [],
+    }));
+    const route = {
+      test: (pathname: string, method: string) =>
+        method === "GET" && pathname === "/api/documents/",
+      handle: (request: Request) => {
+        const url = new URL(request.url);
+        if (url.searchParams.has("id__in")) {
+          return {
+            count: 1,
+            results: [{ id: 99, title: "Semantic winner", content: "x", tags: [] }],
+          };
+        }
+        return { count: lexicalDocs.length, results: lexicalDocs };
+      },
+    };
+    const handle = setup([route]);
+    // Best possible semantic rank (1st) for a document absent from the
+    // lexical page at all: RRF score 1/(60+1) ~= 0.01639. The lexical
+    // page's worst-ranked (5th) entry scores 1/(60+5) ~= 0.01538 -- lower,
+    // so it's the one that should get displaced once the merged list is
+    // capped back down to page_size.
+    const semantic = fakeSemanticHandle([
+      { documentId: 99, snippet: "top semantic match", score: 0.99 },
+    ]);
+    const tool = createSearchDocumentsTool(handle, semantic);
+    const result = await tool.execute("call-1", { search: MARKER, page_size: 5 });
+    const results = (result.details as { results: Record<string, unknown>[] }).results;
+
+    expect(results).toHaveLength(5);
+    expect(results.some((doc) => doc.id === 99)).toBe(true);
+    // The weakest lexical entry (rank 5) lost its spot to the stronger
+    // semantic-only hit -- the response still obeys page_size rather than
+    // growing to fit every semantic addition.
+    expect(results.some((doc) => doc.id === 5)).toBe(false);
+    expect(results[0]?.id).toBe(1);
+  });
+
+  it("passes params.search -- never params.query -- to the semantic handle", async () => {
+    // The stub-era doc comment on fetchSemanticMatches was explicit that
+    // only the free-text `search` term is ever embedded, never `query`
+    // (paperless-ngx's own Whoosh syntax) -- deliberate, so this asserts
+    // it's still true against the real implementation's call site.
+    const handle = setup([
+      documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
+    ]);
+    const seenTerms: (string | undefined)[] = [];
+    const semantic: Promise<SemanticSearchHandle> = Promise.resolve({
+      available: true,
+      search: async (searchTerm) => {
+        seenTerms.push(searchTerm);
+        return [];
+      },
+      dispose: async () => {},
+    });
+    const tool = createSearchDocumentsTool(handle, semantic);
+    await tool.execute("call-1", { query: `content:"${MARKER}"` });
+    expect(seenTerms).toEqual([undefined]);
+  });
+
+  it("still calls the semantic handle with an undefined term on a pure filter/browse call", async () => {
+    // paperless_search_documents' own no-op-on-empty-term guarantee lives
+    // inside searchSemantic (see src/semantic/search.test.ts) -- this only
+    // asserts the call site here threads params.search through as-is
+    // (undefined for a filter-only call) rather than substituting
+    // something else.
+    const handle = setup([
+      documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
+    ]);
+    const seenTerms: (string | undefined)[] = [];
+    const semantic: Promise<SemanticSearchHandle> = Promise.resolve({
+      available: true,
+      search: async (searchTerm) => {
+        seenTerms.push(searchTerm);
+        return [];
+      },
+      dispose: async () => {},
+    });
+    const tool = createSearchDocumentsTool(handle, semantic);
+    await tool.execute("call-1", { tag_id: 7 });
+    expect(seenTerms).toEqual([undefined]);
   });
 });
 
@@ -245,7 +404,7 @@ describe("paperless_get_document content policy", () => {
 describe("outgoing request serialization", () => {
   it("search_documents sends `search` in the request query", async () => {
     const { handle, fetchMock } = setupWithSpy([documentsListRoute([])]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     await tool.execute("call-1", { search: "invoice" });
     expect(lastRequestUrl(fetchMock).searchParams.get("search")).toBe("invoice");
   });
@@ -254,7 +413,7 @@ describe("outgoing request serialization", () => {
     const { handle, fetchMock } = setupWithSpy([
       documentsListRoute([{ id: 1, title: "Doc 1", tags: [] }]),
     ]);
-    const tool = createSearchDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle, noSemanticHandle());
     await tool.execute("call-1", { fields: ["id", "title"] });
     const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
     expect(fields?.split(",")).toEqual(["id", "title"]);
