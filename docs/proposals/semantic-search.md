@@ -24,11 +24,18 @@ this is the difference between "retrieval works if the user guesses the right wo
 
 Three facts shape the design:
 
-1. **paperless-ngx has no server-side embedding support.** The REST API (see
-   `src/generated/paperless-schema.d.ts`) exposes lexical search only — there is no
-   similarity/vector/embedding endpoint to delegate to. Third-party sidecars
-   (paperless-ai, paperless-gpt) exist but bring their own deployment, auth, and API
-   surface; depending on one would make the plugin useless for everyone who doesn't run it.
+1. **paperless-ngx exposes no semantic-search API to delegate to.** The REST API (see
+   `src/generated/paperless-schema.d.ts`) exposes lexical search only. paperless-ngx
+   v3.0.0 (July 2026) did introduce built-in, opt-in **Paperless AI**
+   ([PR #10319](https://github.com/paperless-ngx/paperless-ngx/pull/10319)): LLM-based
+   suggestions and a document-chat/RAG feature backed by a server-side LlamaIndex +
+   FAISS embedding index — but that index is internal (persisted under the server's
+   `LLM_INDEX_DIR`), surfaced only through the chat streaming view and the suggestions
+   endpoint, and there is no retrieval/similarity endpoint an agent tool could query.
+   If upstream ever exposes one, the tool contract proposed here could delegate to it
+   and drop the local index — worth watching. Third-party sidecars (paperless-ai,
+   paperless-gpt) exist but bring their own deployment, auth, and API surface; depending
+   on one would make the plugin useless for everyone who doesn't run it.
 2. **OpenClaw already ships the entire embedding + vector-index toolchain, exposed to
    plugins.** The host's memory subsystem (`memory-core`) indexes markdown/session files
    into a SQLite database using `node:sqlite` + the `sqlite-vec` extension, with hybrid
@@ -54,7 +61,7 @@ Three facts shape the design:
 
 | Option | Verdict |
 | --- | --- |
-| **A. Wait for / rely on paperless-ngx server-side AI** | No such API exists; not on the project's near-term roadmap. Nothing to build against. |
+| **A. Delegate to paperless-ngx server-side AI** | v3.0.0's Paperless AI has an embedding index, but no retrieval/similarity API endpoint — only chat streaming and suggestions. Nothing to build an agent search tool against today; revisit if upstream exposes retrieval. |
 | **B. Require a sidecar (paperless-ai, external vector DB like Qdrant/Chroma)** | Extra infrastructure every user must deploy and secure; couples the plugin to a third project's API stability. Poor fit for the "install plugin, paste token" UX this plugin has. |
 | **C. Query-time-only embeddings (embed the top-N lexical results and rerank)** | Cheap and index-free, but it can only *reorder* what keyword search already found — it cannot recover documents lexical search missed, which is the main motivation. Worth having later as a reranker, not as the core. |
 | **D. Plugin-owned local index: chunk + embed documents into SQLite (sqlite-vec + FTS5) under the plugin's state dir, using OpenClaw's embedding providers** | **Recommended.** Zero extra infrastructure, reuses the exact stack the host's own memory search uses, works with a local embedding model for privacy, degrades cleanly when disabled. |
@@ -380,6 +387,68 @@ milliseconds through the design center and ~100–300 ms at the 100k envelope. s
 store, i.e. exactly the infrastructure option B rejected. The escalation path if the
 envelope is ever exceeded is: int8 quantization (4×) → bit vectors (32×) → only then ANN.
 
+### Considered and rejected: storing vectors in paperless custom fields
+
+An appealing idea for durability: write each document's embeddings back into a paperless
+custom field, so vectors survive loss of the plugin's state dir and "reindex" becomes
+"read the field, load into SQLite". It is technically feasible since v2.19.0 — the
+`longtext` custom field type has no length limit (the older `string` type caps at 128
+chars), so a JSON envelope would fit:
+
+```jsonc
+// custom field "openclaw:semantic-index" (longtext), one per document
+{ "v": 1, "provider": "local", "model": "embeddinggemma-300m…", "dims": 256,
+  "chunking": { "tokens": 400, "overlap": 80 }, "content_hash": "…",
+  "chunks": [ { "s": 1, "e": 42, "vec": "<base64 float32…>" }, … ] }
+```
+
+Rejected, for reasons that compound:
+
+- **It's a backup of a cache.** Embeddings are derived, reproducible data; the source of
+  truth (OCR content) already lives in paperless and is already backed up. Losing the
+  index costs re-embed time (~an hour at 600 docs, overnight at 6k), not data.
+- **It turns the strictly read-only indexer into a writer of every document** — a stated
+  design property lost. A search-only deployment could no longer run on a read-only
+  token, and an indexer bug could now spam or corrupt the archive it's supposed to serve.
+- **Payload in the wrong database.** ~11 KB/doc typical (8 chunks × ~1.4 KB base64) ≈
+  66 MB at 6k docs, ~1 GB at the 100k envelope — stored in paperless's DB, included in
+  its exports, and echoed to **every** API consumer that fetches full documents (this
+  plugin strips `custom_fields` from responses; other clients don't).
+- **It feeds garbage into paperless's own AI.** v3.0's Paperless AI embeds custom fields
+  and notes as part of its document representation — base64 blobs would pollute the
+  server's own index, plus `custom_fields__icontains` filtering and the UI (longtext
+  fields render on the document detail page).
+- **Sync-signal churn.** Writing a field per document during the initial build risks
+  bumping every document's `modified` timestamp (needs verification against a live
+  instance — custom field instances are a separate model, so it may not), which would
+  invalidate the incremental-sync watermark for this plugin *and* every other
+  paperless-watching tool the user runs.
+- **Stale-vector debt.** Vectors are only valid for one (model, dims, chunking) identity.
+  A model change strands ~N documents' worth of stale blobs in people's archives until a
+  mass rewrite — days of API writes at the envelope.
+- **It can't replace the local store anyway.** KNN needs the vectors in the sqlite-vec
+  table regardless; custom fields could only ever be a second copy requiring
+  consistency maintenance, and restoring from them (N API reads of base64) is slower
+  than the alternatives below for every archive size.
+
+**What addresses the durability concern instead:**
+
+1. **The index is self-healing by construction.** After any loss, the normal sync path
+   rebuilds from paperless content — resumable, newest-first, usable while it fills.
+2. **Back up one file.** `semantic-index.sqlite` in the plugin state dir is the entire
+   derived state; anyone backing up their OpenClaw state dir already has it. Phase 2 can
+   add a periodic `VACUUM INTO` snapshot (SQLite's crash-consistent copy) next to the
+   live DB so file-level backup tools never capture a mid-write image.
+3. **The index file is portable** (same model + dims = same identity) — the same
+   property that lets the initial build run on a faster machine doubles as the
+   restore path.
+
+Precedent check: the community has asked for machine-readable data in custom fields
+before ([discussion #5946](https://github.com/paperless-ngx/paperless-ngx/discussions/5946))
+and the answers pointed at notes instead, with the same UI-pollution objections; the
+request was closed for lack of support. Nothing suggests upstream wants custom fields
+used as a blob store.
+
 ### Why 256 dimensions, not the native 768
 
 EmbeddingGemma is Matryoshka-trained: vector prefixes are explicitly optimized to remain
@@ -426,6 +495,7 @@ be conservative:
 | Model/provider changed in config | Index identity mismatch detected at startup → full rebuild (embedding cache makes unchanged-provider rebuilds cheap; model changes are inherently full-cost — see hardware sizing). |
 | Huge archives (tens of thousands of docs) | First index is the only expensive pass; it is resumable, runs newest-first, and reports progress via `index_status`. Per-sync cost afterwards is proportional to changed docs. `sync.concurrency: 1` keeps the 2-vCPU gateway responsive throughout. |
 | Memory pressure on a 4 GB box | Local model is lazy-loaded and unloaded after `idleUnloadMinutes`; steady-state overhead without activity is just the SQLite file. |
+| State dir lost (disk failure, migration) | Index rebuilds from paperless content via the normal sync path — newest-first, resumable, usable while it fills. Backup story: the single `semantic-index.sqlite` file (optionally via a phase-2 `VACUUM INTO` snapshot); see "Considered and rejected: storing vectors in paperless custom fields". |
 
 ## Testing
 
