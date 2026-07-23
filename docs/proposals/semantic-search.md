@@ -289,41 +289,54 @@ Provider resolution goes through `getEmbeddingProvider(id, api.config)`, so anyt
 host supports — including embedding providers registered by *other* plugins — works here
 without this plugin knowing about it.
 
-## Hardware sizing — target: 2 vCPU / 4 GB RAM, CPU-only, up to 100k documents
+## Hardware sizing and scale envelope
 
-The reference deployment for this plugin is a small home-server box (2 vCPU, 4 GB RAM,
-no GPU) that also runs the OpenClaw gateway. The design has to fit that budget, not a
-workstation. The design envelope is **100 000 documents**; real reference archives are
-~600 (light user) and ~6 000 (heavy user) documents. Numbers below are for the default
-local model (EmbeddingGemma-300m, Q8_0), assuming a mixed archive averaging ~2 500
-tokens/document → ~8 chunks/document at the default chunking (400-token chunks, 80
-overlap; text-heavy archives run closer to 15 chunks/document).
+Two distinct requirements, kept separate:
+
+- **Reference deployment:** a small home-server box (2 vCPU, 4 GB RAM, no GPU) that also
+  runs the OpenClaw gateway, serving realistic personal archives — ~600 documents (light
+  user) to ~6 000 (heavy user). The *defaults* are tuned for this.
+- **Architectural envelope:** the design must not hit a wall before **100 000 documents**
+  — not on the reference box, but on hardware proportionate to an archive that size
+  (several cores, ≥16 GB). The *architecture* must scale there without a redesign.
+
+Numbers below are for the default local model (EmbeddingGemma-300m, Q8_0), assuming a
+mixed archive averaging ~2 500 tokens/document → ~8 chunks/document at the default
+chunking (400-token chunks, 80 overlap; text-heavy archives run closer to 15
+chunks/document).
 
 | | 600 docs | 6 000 docs | 100 000 docs (envelope) |
 | --- | --- | --- | --- |
 | Chunks (typical / text-heavy) | ~5k / 9k | ~48k / 90k | ~800k / 1.5M |
 | Vector table, 256 d float32 | ~5 MB | ~50 MB | ~820 MB |
-| Vector table, 768 d float32 | ~15 MB | ~150 MB | ~2.4 GB — infeasible here |
+| Vector table, 768 d float32 | ~15 MB | ~150 MB | ~2.4 GB |
 | Whole DB incl. chunk text + FTS | ~20 MB | ~200 MB | ~3–4 GB |
-| KNN scan per query (256 d, warm) | <1 ms | ~5–15 ms | ~100–300 ms |
-| Initial backfill (1–3 chunks/s) | ~30–80 min | ~5–13 h | ~3–9 days |
+| KNN scan per query (256 d, warm) | <1 ms | ~5–15 ms | ~100–300 ms (2 vCPU) |
+| Initial backfill (1–3 chunks/s local) | ~30–80 min | ~5–13 h | ~3–9 days |
 | Incremental sync per new doc | ~3–8 s | ~3–8 s | ~3–8 s |
 
-Readings:
+**On the reference box:** 600 docs is a non-event — indexed within the hour, everything
+cached, instant queries. 6 000 docs is the design center — overnight backfill, vectors
+permanently in page cache, ~10 ms queries, no caveats. The reference box is *not*
+expected to host 100k documents.
 
-- **600 docs is a non-event** — indexed within the hour, everything cached, instant
-  queries. **6 000 docs is the design center** — overnight backfill, vectors permanently
-  in page cache, ~10 ms queries, no caveats.
-- **At 100k docs, two things stress — neither calls for ANN.** First, ~820 MB of float32
-  vectors no longer reliably fits a 4 GB box's page cache, so scans risk going
-  disk-bound; the phase-2 lever is **int8 quantization** (sqlite-vec supports int8 and
-  bit vectors natively): ~205 MB, 4× less scan bandwidth, comfortably cached again.
-  Second, the initial backfill is **days** of background embedding — resumable and
-  newest-first (below), so the archive is usable throughout, but worth an escape hatch:
-  the index file is **portable**. Same model + same dims = same index identity, so the
-  initial backfill can run on any faster machine pointed at the same paperless instance
-  and `semantic-index.sqlite` copied over; the small box then only ever does incremental
-  syncs.
+**At the 100k envelope (on proportionate hardware):** nothing in the design breaks —
+SQLite is comfortable at multi-GB scale, the incremental sync cost is unchanged (it
+scales with *changed* documents, not archive size), and per-query brute-force scan of
+~820 MB of vectors sits in page cache on a 16 GB machine at well under 200 ms. Two levers
+exist before any architectural change would be needed:
+
+- **Scan cost:** int8 quantization (sqlite-vec supports int8 and bit vectors natively)
+  cuts the vector table 4× (~205 MB) and scan bandwidth with it — this is the phase-2
+  option if query latency ever matters at the high end, and it also happens to rescue
+  memory-constrained boxes.
+- **Backfill time:** the local encoder is the bottleneck (days at 800k chunks at
+  1–3 chunks/s; more cores help linearly). Options that fit the design unchanged: a
+  remote embedding provider for the one-time build (config choice, with the privacy
+  trade-off made explicit), or building elsewhere — the index file is **portable**: same
+  model + same dims = same index identity, so the initial backfill can run on any faster
+  machine pointed at the same paperless instance and `semantic-index.sqlite` copied to
+  the serving box, which then only ever does incremental syncs.
 
 **Memory.**
 - Model weights + inference context: roughly 400–500 MB RSS while loaded. That is
@@ -372,8 +385,9 @@ envelope is ever exceeded is: int8 quantization (4×) → bit vectors (32×) →
 EmbeddingGemma is Matryoshka-trained: vector prefixes are explicitly optimized to remain
 good embeddings, so truncating 768 → 256 costs only ~1–2 % relative retrieval quality —
 not a naive lossy projection. In exchange: 3× smaller vector table and 3× less scan
-bandwidth, which per the table is the difference between "fits in page cache" and
-"disk-bound" at large scale (768 d is outright infeasible at the 100k envelope on 4 GB).
+bandwidth — on the reference box that's the difference between "always in page cache"
+and "competing with everything else for 4 GB", and at the 100k envelope it keeps the
+vector table (~820 MB vs ~2.4 GB) cache-resident on ordinary hardware.
 The quality delta is further masked by this architecture: semantic search only has to get
 the right document into the top-k (the agent then verifies via grep/range), and the
 hybrid BM25 leg recovers borderline orderings via RRF. Note there is no cheap "store 768,
