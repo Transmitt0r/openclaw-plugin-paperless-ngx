@@ -5,10 +5,12 @@
 
 An [OpenClaw](https://docs.openclaw.ai) plugin for [paperless-ngx](https://docs.paperless-ngx.com/).
 
-It registers a handful of generic agent tools over the paperless-ngx REST API — list/search
-documents, get a document, patch a document, and list/create tags, correspondents, and document
-types. The tools mirror the API rather than any particular workflow, so they're equally useful for
-ad-hoc lookups or for an agent doing multi-step triage (e.g. clearing an inbox).
+It registers a small, general-purpose set of agent tools over the paperless-ngx REST API, with a
+deliberate focus on retrieval: search documents, get a document's metadata, read a document's
+content (bounded, page-able), pattern-search within a document, patch a document, and list/create
+tags, correspondents, and document types. Tools are split by *access pattern* (search vs. read vs.
+pattern-search), not by resource type, and are bounded by default rather than pulling a document's
+full OCR text into context unless a caller specifically reads it that way.
 
 ## Install
 
@@ -51,17 +53,23 @@ openclaw config set plugins.entries.paperless-ngx.config.apiToken \
 
 | Tool | Description |
 | --- | --- |
-| `paperless_list_documents` | Search/filter documents (full-text search, correspondent, document type, tag, date range, ordering, pagination), or batch-fetch by `ids`. Results include OCR content, a link to each document in the paperless-ngx web UI, and correspondent/document type/tag names resolved alongside their ids. |
-| `paperless_get_document` | Fetch a single document by id. Same automatic name resolution as `paperless_list_documents`. |
-| `paperless_update_document` | Patch a document's title, correspondent, document type, tags, or created date. Use `tags` for a full replacement, or `add_tag_ids`/`remove_tag_ids` to adjust tags without disturbing the rest. Never touches `storage_path`. Pass `fields` to trim the echoed-back response (e.g. skip OCR `content`) — the API itself always computes the full document, this just filters what's returned to you. |
-| `paperless_list_tags` | List tags, optionally filtered by name. Resolves parent/children tag ids to names. |
-| `paperless_create_tag` | Create a new tag. |
-| `paperless_list_correspondents` | List correspondents, optionally filtered by name. |
-| `paperless_create_correspondent` | Create a new correspondent. |
-| `paperless_list_document_types` | List document types, optionally filtered by name. |
-| `paperless_create_document_type` | Create a new document type. |
+| `paperless_search_documents` | Search/filter documents (full-text search, correspondent, document type, tag, date range, ordering, pagination), or batch-fetch by `ids`. Never returns OCR content — a `content_snippet` around the match is included instead when `search`/`query` is set. Also includes a link to each document in the paperless-ngx web UI and correspondent/document type/tag names resolved alongside their ids. The `search` param is the integration point for hybrid lexical+semantic search (see below) — currently lexical-only. |
+| `paperless_get_document` | Fetch a single document's metadata by id. Same automatic name resolution as `paperless_search_documents`. Never returns raw content; pass `excerpt_search` for a short `content_snippet`-style excerpt around one term. |
+| `paperless_read_document` | Read a document's OCR content, bounded to a line range (capped at 500 lines/call, defaults to the first 200 if no range is given). Page through a longer document by following up with `start_line` past what you've already read (`total_lines` in the response tells you when there's more). |
+| `paperless_search_document_content` | Search one document's OCR content for a pattern (like `grep -n -C`) without reading the whole document into context — returns matching lines plus surrounding context. |
+| `paperless_update_document` | Patch a document's title, correspondent, document type, tags, or created date. Use `tags` for a full replacement, or `add_tag_ids`/`remove_tag_ids` to adjust tags without disturbing the rest. Never touches `storage_path`. OCR `content` is omitted from the response unless `fields` explicitly includes `"content"` (capped at 500 lines, same as `paperless_read_document`). |
+| `paperless_list_taxonomy` | List tags, correspondents, or document types (`kind: "tag" \| "correspondent" \| "document_type"`), optionally filtered by name. Tags additionally resolve parent/children ids to names. |
+| `paperless_create_taxonomy_term` | Create a new tag, correspondent, or document type (`kind`). `parent_id` is only meaningful for `kind: "tag"`. |
 
 There's deliberately no delete tool in this first pass.
+
+### Semantic search (in progress)
+
+A semantic/embeddings-based search backend for this document corpus is being built separately. Once
+it exists, `paperless_search_documents`'s `search` param becomes hybrid (lexical + semantic)
+internally — no new tool, no new param. The tool's contract with the model doesn't change; only the
+ranking behind it improves. See `fetchSemanticMatches`/`mergeSemanticMatches` in
+`src/tools/documents.ts` for the integration seam (currently a no-op stub).
 
 ## Skills
 
