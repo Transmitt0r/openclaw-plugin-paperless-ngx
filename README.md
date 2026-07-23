@@ -78,28 +78,5 @@ and edit it if the defaults don't fit.
 
 ## Development
 
-```bash
-pnpm install
-pnpm run build
-pnpm run test
-pnpm run lint
-```
-
-### Regenerating API types
-
-`src/generated/paperless-schema.d.ts` is generated from your paperless-ngx instance's live OpenAPI
-schema via [openapi-typescript](https://openapi-ts.dev/), and consumed through
-[openapi-fetch](https://openapi-ts.dev/openapi-fetch/) for a fully typed client:
-
-```bash
-export PAPERLESS_URL=https://paperless.example.com
-export PAPERLESS_TOKEN=your-api-token
-pnpm run generate:types
-```
-
-Re-run this after upgrading paperless-ngx if you rely on newer filters or fields.
-
-Note: `openapi-typescript`'s codegen currently only supports TypeScript ^5.x, while this project
-builds against the latest TypeScript major. `generate:types` runs the generator through `pnpm dlx`
-in an isolated resolution so it gets a compatible TypeScript without downgrading the project's own
-devDependency.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for dev setup, regenerating API types, commit conventions,
+and how releases work.
