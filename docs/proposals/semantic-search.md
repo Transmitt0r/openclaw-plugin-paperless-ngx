@@ -289,11 +289,41 @@ Provider resolution goes through `getEmbeddingProvider(id, api.config)`, so anyt
 host supports — including embedding providers registered by *other* plugins — works here
 without this plugin knowing about it.
 
-## Hardware sizing — target: 2 vCPU / 4 GB RAM, CPU-only
+## Hardware sizing — target: 2 vCPU / 4 GB RAM, CPU-only, up to 100k documents
 
 The reference deployment for this plugin is a small home-server box (2 vCPU, 4 GB RAM,
 no GPU) that also runs the OpenClaw gateway. The design has to fit that budget, not a
-workstation. Numbers below are for the default local model (EmbeddingGemma-300m, Q8_0).
+workstation. The design envelope is **100 000 documents**; real reference archives are
+~600 (light user) and ~6 000 (heavy user) documents. Numbers below are for the default
+local model (EmbeddingGemma-300m, Q8_0), assuming a mixed archive averaging ~2 500
+tokens/document → ~8 chunks/document at the default chunking (400-token chunks, 80
+overlap; text-heavy archives run closer to 15 chunks/document).
+
+| | 600 docs | 6 000 docs | 100 000 docs (envelope) |
+| --- | --- | --- | --- |
+| Chunks (typical / text-heavy) | ~5k / 9k | ~48k / 90k | ~800k / 1.5M |
+| Vector table, 256 d float32 | ~5 MB | ~50 MB | ~820 MB |
+| Vector table, 768 d float32 | ~15 MB | ~150 MB | ~2.4 GB — infeasible here |
+| Whole DB incl. chunk text + FTS | ~20 MB | ~200 MB | ~3–4 GB |
+| KNN scan per query (256 d, warm) | <1 ms | ~5–15 ms | ~100–300 ms |
+| Initial backfill (1–3 chunks/s) | ~30–80 min | ~5–13 h | ~3–9 days |
+| Incremental sync per new doc | ~3–8 s | ~3–8 s | ~3–8 s |
+
+Readings:
+
+- **600 docs is a non-event** — indexed within the hour, everything cached, instant
+  queries. **6 000 docs is the design center** — overnight backfill, vectors permanently
+  in page cache, ~10 ms queries, no caveats.
+- **At 100k docs, two things stress — neither calls for ANN.** First, ~820 MB of float32
+  vectors no longer reliably fits a 4 GB box's page cache, so scans risk going
+  disk-bound; the phase-2 lever is **int8 quantization** (sqlite-vec supports int8 and
+  bit vectors natively): ~205 MB, 4× less scan bandwidth, comfortably cached again.
+  Second, the initial backfill is **days** of background embedding — resumable and
+  newest-first (below), so the archive is usable throughout, but worth an escape hatch:
+  the index file is **portable**. Same model + same dims = same index identity, so the
+  initial backfill can run on any faster machine pointed at the same paperless instance
+  and `semantic-index.sqlite` copied over; the small box then only ever does incremental
+  syncs.
 
 **Memory.**
 - Model weights + inference context: roughly 400–500 MB RSS while loaded. That is
@@ -302,20 +332,12 @@ workstation. Numbers below are for the default local model (EmbeddingGemma-300m,
   Steady state with no search activity: ~0 extra memory. The cost is a cold-start of a
   few seconds on the first query after idle — acceptable for an agent tool call, and the
   status tool reports whether the model is currently resident.
-- Index size: EmbeddingGemma is Matryoshka-trained, so vectors can be truncated to 256
-  dims with only marginal quality loss. **Default `dimensions: 256`** (float32 → ~1 KB
-  per chunk instead of ~3 KB at the native 768). A 5 000-document archive at ~15 chunks
-  per document is ~75 000 chunks → ~75 MB vector table + text/FTS, comfortably fine on
-  disk, and a full brute-force KNN scan of 75 000×256 floats is tens of milliseconds on
-  this CPU — no ANN index needed at personal-archive scale.
 
 **CPU / throughput.**
 - Embedding a ~400-token chunk is one encoder forward pass; on 2 CPU threads expect
-  order-of **1–3 chunks/second**. The **initial** index of a large archive is therefore
-  hours (e.g. ~75 000 chunks ≈ 8–20 h) — that's fine *if and only if* it is treated as a
-  resumable background pass, which the checkpointing design already guarantees. After
-  that, incremental syncs touch only changed documents (a handful of seconds per newly
-  consumed document).
+  order-of **1–3 chunks/second**. Initial-index cost scales linearly with the table
+  above; checkpointing makes the pass resumable, and afterwards syncs touch only changed
+  documents.
 - To keep the gateway responsive while indexing on 2 vCPUs: `sync.concurrency` defaults
   to **1** (one document at a time, serial `embedBatch` calls) and the sync loop yields
   between documents. Indexing throughput is deliberately sacrificed for interactivity.
@@ -324,13 +346,41 @@ workstation. Numbers below are for the default local model (EmbeddingGemma-300m,
   enabling the feature, while the long tail of old archives fills in behind. Combined
   with honest `index_status` in query results ("62 % indexed, backfill running"), the
   feature is useful long before the first full pass completes.
-- Query cost is one single-chunk embed (sub-second warm) + the KNN/FTS scan — negligible.
+- Query cost is one single-chunk embed (sub-second warm) + the KNN/FTS scan — negligible
+  at reference scale, ~100–300 ms warm at the 100k envelope (pre-quantization).
 
 **What this rules out:** larger local models (e.g. 0.6 B+ embedding models) and
 re-embedding the corpus casually. The index-identity rebuild on model change is correct
 but expensive here — another reason the default model is pinned and stable rather than
 "whatever the host's latest default is" (the identity check uses the provider's
 `EmbeddingProviderIndexIdentity`, so an intentional model change still rebuilds cleanly).
+
+### Why brute-force KNN, not ANN
+
+An approximate-nearest-neighbor index is a cost, not an upgrade, until scan time actually
+hurts: it adds build cost on every insert (competing with embedding on 2 vCPUs), resident
+memory for the graph (HNSW typically adds 100–400 bytes/vector — tens to hundreds of MB
+here), recall loss, and tuning parameters that become support burden. Meanwhile a brute
+cosine scan is exact, zero-maintenance, and — per the table — stays in the tens of
+milliseconds through the design center and ~100–300 ms at the 100k envelope. sqlite-vec's
+`vec0` is a SIMD brute-force scanner anyway; adopting ANN would mean a separate vector
+store, i.e. exactly the infrastructure option B rejected. The escalation path if the
+envelope is ever exceeded is: int8 quantization (4×) → bit vectors (32×) → only then ANN.
+
+### Why 256 dimensions, not the native 768
+
+EmbeddingGemma is Matryoshka-trained: vector prefixes are explicitly optimized to remain
+good embeddings, so truncating 768 → 256 costs only ~1–2 % relative retrieval quality —
+not a naive lossy projection. In exchange: 3× smaller vector table and 3× less scan
+bandwidth, which per the table is the difference between "fits in page cache" and
+"disk-bound" at large scale (768 d is outright infeasible at the 100k envelope on 4 GB).
+The quality delta is further masked by this architecture: semantic search only has to get
+the right document into the top-k (the agent then verifies via grep/range), and the
+hybrid BM25 leg recovers borderline orderings via RRF. Note there is no cheap "store 768,
+scan 256" middle ground — sqlite-vec scans whole blobs, so that would mean two vector
+tables — and `dimensions` is part of the index identity, so changing it later is a full
+re-embed (hours to days here). Defaulting small is the choice that stays revisable
+upward on bigger hardware via config.
 
 ## Privacy & security
 
