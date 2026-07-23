@@ -2,7 +2,7 @@ import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { type Static, Type } from "typebox";
 import type { PaperlessClient, PaperlessClientHandle } from "../client.js";
 import { toToolResult, unwrap } from "../client.js";
-import { paginationParams } from "./pagination.js";
+import { clampPageSize, paginationParams } from "./pagination.js";
 import { fetchNameMap } from "./relations.js";
 
 type TaxonomyEndpoint = "/api/tags/" | "/api/correspondents/" | "/api/document_types/";
@@ -106,7 +106,7 @@ function createListTaxonomyTool(
             query: {
               name__icontains: params.name_contains,
               page: params.page,
-              page_size: params.page_size,
+              page_size: clampPageSize(params.page_size),
             },
           },
         }),

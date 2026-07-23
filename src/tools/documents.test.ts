@@ -5,6 +5,7 @@ import {
   createGetDocumentTool,
   createGrepDocumentTool,
   createListDocumentsTool,
+  createUpdateDocumentTool,
 } from "./documents.js";
 
 const BASE_URL = "https://paperless.example.com";
@@ -71,6 +72,14 @@ const documentGetRoute = (docsById: Record<number, Record<string, unknown>>): Ro
   },
 });
 
+// The update tool PATCHes and echoes back whatever this returns -- callers
+// pass the same fixture the PATCH "changed" so the shaped response reflects
+// the (fake) post-update state, same as the real API would.
+const documentPatchRoute = (doc: Record<string, unknown>): Route => ({
+  test: (pathname, method) => method === "PATCH" && /^\/api\/documents\/\d+\/$/.test(pathname),
+  handle: () => doc,
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -93,15 +102,18 @@ describe("paperless_list_documents content policy", () => {
     expect(doc.title).toBe("Doc 1");
   });
 
-  it("includes full content when include_content is true", async () => {
+  it("never returns content, even if `fields` explicitly lists it", async () => {
+    // list_documents has no include_content option at all -- the client-side
+    // content policy strips `content` from every result regardless of what
+    // `fields` asked the API for, so there's no way to get full text back
+    // from a list call. Use paperless_get_document/grep/range instead.
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
     const tool = createListDocumentsTool(handle);
-    const result = await tool.execute("call-1", { include_content: true });
+    const result = await tool.execute("call-1", { fields: ["id", "title", "content"] });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
-    expect(doc.content).toBe(SAMPLE_CONTENT);
-    expect(doc.content_snippet).toBeUndefined();
+    expect(doc.content).toBeUndefined();
   });
 
   it("adds a content_snippet around the search term when content is omitted", async () => {
@@ -151,16 +163,6 @@ describe("paperless_list_documents content policy", () => {
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     const snippet = doc.content_snippet as string;
     expect(snippet).toContain(MARKER);
-  });
-
-  it("adds `content` to the outgoing `fields` request when include_content is true", async () => {
-    const { handle, fetchMock } = setupWithSpy([
-      documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
-    ]);
-    const tool = createListDocumentsTool(handle);
-    await tool.execute("call-1", { fields: ["id", "title"], include_content: true });
-    const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
-    expect(fields?.split(",")).toEqual(expect.arrayContaining(["id", "title", "content"]));
   });
 
   it("keeps an emoji intact when it straddles a snippet boundary", async () => {
@@ -232,6 +234,32 @@ describe("paperless_get_document content policy", () => {
     const doc = result.details as Record<string, unknown>;
     expect(doc.content).toBe(SAMPLE_CONTENT);
   });
+
+  it("does not truncate content at or under the line cap", async () => {
+    const shortContent = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}`).join("\n");
+    const handle = setup([
+      documentGetRoute({ 1: { id: 1, title: "Doc 1", content: shortContent } }),
+    ]);
+    const tool = createGetDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, include_content: true });
+    const doc = result.details as Record<string, unknown>;
+    expect(doc.content).toBe(shortContent);
+    expect(doc.content_truncated).toBeUndefined();
+    expect(doc.content_total_lines).toBeUndefined();
+  });
+
+  it("caps content at 500 lines and reports content_truncated/content_total_lines", async () => {
+    const longContent = Array.from({ length: 600 }, (_, i) => `Line ${i + 1}`).join("\n");
+    const handle = setup([
+      documentGetRoute({ 1: { id: 1, title: "Doc 1", content: longContent } }),
+    ]);
+    const tool = createGetDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, include_content: true });
+    const doc = result.details as Record<string, unknown>;
+    expect((doc.content as string).split("\n")).toHaveLength(500);
+    expect(doc.content_truncated).toBe(true);
+    expect(doc.content_total_lines).toBe(600);
+  });
 });
 
 describe("outgoing request serialization", () => {
@@ -242,12 +270,12 @@ describe("outgoing request serialization", () => {
     expect(lastRequestUrl(fetchMock).searchParams.get("search")).toBe("invoice");
   });
 
-  it("list_documents sends `fields` as given (without content) when include_content is false", async () => {
+  it("list_documents sends `fields` as given", async () => {
     const { handle, fetchMock } = setupWithSpy([
       documentsListRoute([{ id: 1, title: "Doc 1", tags: [] }]),
     ]);
     const tool = createListDocumentsTool(handle);
-    await tool.execute("call-1", { fields: ["id", "title"], include_content: false });
+    await tool.execute("call-1", { fields: ["id", "title"] });
     const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
     expect(fields?.split(",")).toEqual(["id", "title"]);
   });
@@ -545,5 +573,56 @@ describe("paperless_get_document_range", () => {
     expect(details.start_line).toBe(1);
     expect(details.end_line).toBe(1);
     expect(details.content).toBe(longLine);
+  });
+});
+
+describe("paperless_update_document content policy", () => {
+  it("omits content by default", async () => {
+    const handle = setup([
+      documentPatchRoute({ id: 1, title: "New Title", content: SAMPLE_CONTENT, tags: [] }),
+    ]);
+    const tool = createUpdateDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, title: "New Title" });
+    const doc = result.details as Record<string, unknown>;
+    expect(doc.title).toBe("New Title");
+    expect(doc.content).toBeUndefined();
+  });
+
+  it("includes content when `fields` explicitly lists it", async () => {
+    const handle = setup([
+      documentPatchRoute({ id: 1, title: "New Title", content: SAMPLE_CONTENT, tags: [] }),
+    ]);
+    const tool = createUpdateDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, title: "New Title", fields: ["content"] });
+    const doc = result.details as Record<string, unknown>;
+    expect(doc.content).toBe(SAMPLE_CONTENT);
+  });
+
+  it("caps content at 500 lines and reports content_truncated/content_total_lines even though `fields` didn't ask for them", async () => {
+    const longContent = Array.from({ length: 600 }, (_, i) => `Line ${i + 1}`).join("\n");
+    const handle = setup([
+      documentPatchRoute({ id: 1, title: "New Title", content: longContent, tags: [] }),
+    ]);
+    const tool = createUpdateDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1, title: "New Title", fields: ["content"] });
+    const doc = result.details as Record<string, unknown>;
+    expect((doc.content as string).split("\n")).toHaveLength(500);
+    expect(doc.content_truncated).toBe(true);
+    expect(doc.content_total_lines).toBe(600);
+  });
+
+  it("still omits content when `fields` is given but doesn't list content", async () => {
+    const handle = setup([
+      documentPatchRoute({ id: 1, title: "New Title", content: SAMPLE_CONTENT, tags: [] }),
+    ]);
+    const tool = createUpdateDocumentTool(handle);
+    const result = await tool.execute("call-1", {
+      id: 1,
+      title: "New Title",
+      fields: ["title"],
+    });
+    const doc = result.details as Record<string, unknown>;
+    expect(doc.title).toBe("New Title");
+    expect(doc.content).toBeUndefined();
   });
 });

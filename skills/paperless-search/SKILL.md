@@ -5,7 +5,7 @@ description: "Search the user's paperless-ngx documents by full-text OCR query. 
 
 # Paperless Search
 
-Search the user's paperless-ngx documents by full-text OCR query, using the paperless-ngx plugin's tools (`paperless_list_documents`, `paperless_get_document`, `paperless_grep_document`, `paperless_get_document_range`, `paperless_list_correspondents`, `paperless_list_tags`, `paperless_list_document_types`). OCR `content` is opt-in on `paperless_list_documents`/`paperless_get_document` (omitted by default) — lean on search-result `content_snippet`s and `paperless_grep_document` instead of requesting full content. This opt-in only saves *your* context budget: paperless-ngx still reads a document's full OCR content server-side regardless of what you ask for back.
+Search the user's paperless-ngx documents by full-text OCR query, using the paperless-ngx plugin's tools (`paperless_list_documents`, `paperless_get_document`, `paperless_grep_document`, `paperless_get_document_range`, `paperless_list_correspondents`, `paperless_list_tags`, `paperless_list_document_types`). `paperless_list_documents` never returns OCR content at all — lean on its `content_snippet`s. `paperless_get_document`'s `include_content: true` is opt-in and capped at 500 lines; it only trims what's returned to *you* — paperless-ngx still reads a document's full OCR content server-side regardless of what you ask for back.
 
 ## Triggers
 
@@ -13,14 +13,14 @@ The user asks: "find my car insurance policy", "do I have a receipt for that Ike
 
 ## Procedure
 
-1. Start broad: `paperless_list_documents` with `search` (full-text, matches OCR content) for the core concept. Don't pre-filter before trying this — full-text alone is usually enough. OCR `content` is opt-in and omitted by default; when `search`/`query` is set, each result instead gets a short `content_snippet` around the match — usually enough to judge relevance without fetching full content.
+1. Start broad: `paperless_list_documents` with `search` (full-text, matches OCR content) for the core concept. Don't pre-filter before trying this — full-text alone is usually enough. `list_documents` never returns full content; when `search`/`query` is set, each result instead gets a short `content_snippet` around the match — usually enough to judge relevance.
 2. Add filters only from constraints the user actually gave:
    - A correspondent name → resolve to an id via `paperless_list_correspondents` first, don't guess the id, then pass `correspondent_id`
    - A date → `created_from`/`created_to` (`YYYY-MM-DD`)
    - A tag → resolve to an id via `paperless_list_tags` first, then pass `tag_id` (single tag filter)
 3. Zero results → broaden before giving up: fewer/different query terms (try synonyms, other likely languages, partial words), drop filters one at a time.
 4. Present results compactly — title, correspondent, date, doc id, `content_snippet`.
-5. To verify or dig into a specific candidate, prefer `paperless_grep_document` (search that one document's content for the exact detail you need — an amount, a policy number, a clause) or `paperless_get_document_range` (read a specific line range) over `paperless_get_document`/`paperless_list_documents` with `include_content: true`, which pulls the entire OCR text into context.
+5. Once you already know a candidate's document id (from step 1 or 4) and just need one specific detail from it — an amount, a policy number, a clause, a date — do NOT call `paperless_get_document` with `include_content: true` to read the whole thing. Use `paperless_grep_document` instead: pattern-match the term you're actually looking for (e.g. for a total, try `pattern: "Gesamtbetrag|Betrag|Summe|Total"`). Reach for `paperless_get_document_range` only when you genuinely need to read a section of the document, not just extract one fact. `include_content: true` is for the rare case you need to read the document's content as a whole (e.g. summarizing it) — it is not a shortcut for "I already know which document, now let me look inside it."
 6. Multiple plausible matches → list them for the user to pick, don't guess which one they meant.
 
 ## Safety rules
