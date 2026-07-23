@@ -65,15 +65,31 @@ There's deliberately no delete tool in this first pass.
 
 ### Semantic search
 
-`paperless_search_documents`'s `search` param is hybrid (lexical + semantic) internally — no new
-tool, no new param, and the tool's contract with the model doesn't change; only the ranking behind
-it improves. The semantic side is a plugin-owned local vector index (SQLite + `sqlite-vec`, a local
-embedding model, no external service), synced incrementally from paperless-ngx in the background and
-fused with paperless's own lexical results via Reciprocal Rank Fusion. It fails open: if the local
-model/index isn't available for any reason (including on Node versions without `node:sqlite`),
-`paperless_search_documents` transparently falls back to lexical-only search, same as before. See
-`src/semantic/` for the implementation; the integration seam itself is
-`fetchSemanticMatches`/`mergeSemanticMatches` in `src/tools/documents.ts`.
+`paperless_search_documents` understands meaning, not just keywords — searching "car insurance"
+also finds a document whose text only ever says "Kfz-Haftpflichtversicherung". This happens
+automatically inside the existing `search` param; there's no separate tool or mode to choose. It
+runs entirely locally (a small local embedding model, no external service, no OCR text leaving your
+machine), builds up in the background after install, and fails open to today's keyword-only
+behavior if it can't start for any reason.
+
+It's on by default. To turn it off or move where its local index file lives:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "paperless-ngx": {
+        "config": {
+          "semanticSearch": {
+            "enabled": false,
+            "indexPath": "/custom/path/semantic-index.db"
+          }
+        }
+      }
+    }
+  }
+}
+```
 
 ## Skills
 
