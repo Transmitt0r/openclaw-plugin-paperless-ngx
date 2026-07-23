@@ -5,14 +5,25 @@ import { toToolResult, unwrap } from "../client.js";
 import { clampPageSize, paginationParams } from "./pagination.js";
 import { fetchNameMap } from "./relations.js";
 
+type TaxonomyKind = "tag" | "correspondent" | "document_type";
 type TaxonomyEndpoint = "/api/tags/" | "/api/correspondents/" | "/api/document_types/";
 
-const listParams = Type.Object({
-  name_contains: Type.Optional(
-    Type.String({ description: "Case-insensitive name substring filter." }),
-  ),
-  ...paginationParams,
-});
+const TAXONOMY_ENDPOINTS: Record<TaxonomyKind, TaxonomyEndpoint> = {
+  tag: "/api/tags/",
+  correspondent: "/api/correspondents/",
+  document_type: "/api/document_types/",
+};
+
+// Tags, correspondents, and document types are structurally near-identical
+// resources (id + name; tags also have a parent/children hierarchy) --
+// consolidated into one list tool and one create tool parameterized by
+// `kind`, rather than three near-duplicate tools per operation. Matches
+// this plugin's document-content tools, which are split by *access
+// pattern* (read/search/range), not by *resource kind*.
+const taxonomyKindParam = Type.Union(
+  [Type.Literal("tag"), Type.Literal("correspondent"), Type.Literal("document_type")],
+  { description: "Which taxonomy resource to operate on." },
+);
 
 // owner/permissions are ACL metadata: not settable via any tool in this
 // plugin and not relevant to taxonomy lookups -- stripped for the same
@@ -24,7 +35,8 @@ function stripAcl<T extends Record<string, unknown>>(item: T): Omit<T, "owner" |
 
 // Tags can be hierarchical (parent/children), carried as bare ids just like
 // documents' correspondent/document_type/tags. Resolved the same way: batch
-// id__in lookups against /api/tags/ itself.
+// id__in lookups against /api/tags/ itself. Correspondents and document
+// types are flat -- this only applies to `kind: "tag"`.
 function collectTagHierarchyIds(tags: Record<string, unknown>[]): number[] {
   const ids = new Set<number>();
   for (const tag of tags) {
@@ -82,26 +94,29 @@ async function shapeSingleTag(
   return shapeTag(tagNames, tag);
 }
 
-type TaxonomyToolMeta = {
-  name: string;
-  label: string;
-  description: string;
-  endpoint: TaxonomyEndpoint;
-};
+const listTaxonomyParams = Type.Object({
+  kind: taxonomyKindParam,
+  name_contains: Type.Optional(
+    Type.String({ description: "Case-insensitive name substring filter." }),
+  ),
+  ...paginationParams,
+});
 
-function createListTaxonomyTool(
+export function createListTaxonomyTool(
   handlePromise: Promise<PaperlessClientHandle>,
-  meta: TaxonomyToolMeta,
 ): AnyAgentTool {
   return {
-    name: meta.name,
-    label: meta.label,
-    description: meta.description,
-    parameters: listParams,
-    execute: async (_toolCallId, params: Static<typeof listParams>) => {
+    name: "paperless_list_taxonomy",
+    label: "List paperless-ngx tags/correspondents/document types",
+    description:
+      "List existing tags, correspondents, or document types -- pick one via `kind` -- optionally " +
+      "filtered by name. Tags are hierarchical: parent/children tag ids are automatically resolved " +
+      "to parent_name/children_names alongside the ids. Correspondents and document types are flat.",
+    parameters: listTaxonomyParams,
+    execute: async (_toolCallId, params: Static<typeof listTaxonomyParams>) => {
       const { client } = await handlePromise;
       const result = unwrap(
-        await client.GET(meta.endpoint, {
+        await client.GET(TAXONOMY_ENDPOINTS[params.kind], {
           params: {
             query: {
               name__icontains: params.name_contains,
@@ -111,7 +126,7 @@ function createListTaxonomyTool(
           },
         }),
       );
-      if (meta.endpoint === "/api/tags/") {
+      if (params.kind === "tag") {
         return toToolResult(await shapeTagList(client, result));
       }
       return toToolResult({
@@ -122,96 +137,43 @@ function createListTaxonomyTool(
   };
 }
 
-export function createListTagsTool(handlePromise: Promise<PaperlessClientHandle>): AnyAgentTool {
-  return createListTaxonomyTool(handlePromise, {
-    name: "paperless_list_tags",
-    label: "List paperless-ngx tags",
-    description:
-      "List existing tags, optionally filtered by name. parent/children tag ids are automatically resolved to parent_name/children_names alongside the ids.",
-    endpoint: "/api/tags/",
-  });
-}
-
-export function createListCorrespondentsTool(
-  handlePromise: Promise<PaperlessClientHandle>,
-): AnyAgentTool {
-  return createListTaxonomyTool(handlePromise, {
-    name: "paperless_list_correspondents",
-    label: "List paperless-ngx correspondents",
-    description: "List existing correspondents, optionally filtered by name.",
-    endpoint: "/api/correspondents/",
-  });
-}
-
-export function createListDocumentTypesTool(
-  handlePromise: Promise<PaperlessClientHandle>,
-): AnyAgentTool {
-  return createListTaxonomyTool(handlePromise, {
-    name: "paperless_list_document_types",
-    label: "List paperless-ngx document types",
-    description: "List existing document types, optionally filtered by name.",
-    endpoint: "/api/document_types/",
-  });
-}
-
-const createNamedParams = Type.Object({
+const createTaxonomyTermParams = Type.Object({
+  kind: taxonomyKindParam,
   name: Type.String({ description: "Name of the new entry." }),
+  parent_id: Type.Optional(
+    Type.Integer({
+      description:
+        'Parent tag id, for a hierarchical tag. Only meaningful when `kind: "tag"` -- ignored otherwise.',
+    }),
+  ),
 });
 
-function createCreateTaxonomyTool(
+export function createCreateTaxonomyTermTool(
   handlePromise: Promise<PaperlessClientHandle>,
-  meta: TaxonomyToolMeta,
 ): AnyAgentTool {
   return {
-    name: meta.name,
-    label: meta.label,
-    description: meta.description,
-    parameters: createNamedParams,
-    execute: async (_toolCallId, params: Static<typeof createNamedParams>) => {
+    name: "paperless_create_taxonomy_term",
+    label: "Create a paperless-ngx tag, correspondent, or document type",
+    description:
+      "Create a new tag, correspondent, or document type -- pick one via `kind`. Check " +
+      "paperless_list_taxonomy first to avoid creating a near-duplicate of an existing one.",
+    parameters: createTaxonomyTermParams,
+    execute: async (_toolCallId, params: Static<typeof createTaxonomyTermParams>) => {
       const { client } = await handlePromise;
-      const result = unwrap(
-        await client.POST(meta.endpoint, {
-          body: { name: params.name },
-        }),
-      );
-      if (meta.endpoint === "/api/tags/") {
+
+      if (params.kind === "tag") {
+        const result = unwrap(
+          await client.POST("/api/tags/", {
+            body: { name: params.name, parent: params.parent_id ?? null },
+          }),
+        );
         return toToolResult(await shapeSingleTag(client, result));
       }
+
+      const endpoint =
+        params.kind === "correspondent" ? "/api/correspondents/" : "/api/document_types/";
+      const result = unwrap(await client.POST(endpoint, { body: { name: params.name } }));
       return toToolResult(stripAcl(result));
     },
   };
-}
-
-export function createCreateCorrespondentTool(
-  handlePromise: Promise<PaperlessClientHandle>,
-): AnyAgentTool {
-  return createCreateTaxonomyTool(handlePromise, {
-    name: "paperless_create_correspondent",
-    label: "Create paperless-ngx correspondent",
-    description:
-      "Create a new correspondent. Check paperless_list_correspondents first to avoid creating a near-duplicate of an existing one.",
-    endpoint: "/api/correspondents/",
-  });
-}
-
-export function createCreateDocumentTypeTool(
-  handlePromise: Promise<PaperlessClientHandle>,
-): AnyAgentTool {
-  return createCreateTaxonomyTool(handlePromise, {
-    name: "paperless_create_document_type",
-    label: "Create paperless-ngx document type",
-    description:
-      "Create a new document type. Check paperless_list_document_types first to avoid creating a near-duplicate of an existing one.",
-    endpoint: "/api/document_types/",
-  });
-}
-
-export function createCreateTagTool(handlePromise: Promise<PaperlessClientHandle>): AnyAgentTool {
-  return createCreateTaxonomyTool(handlePromise, {
-    name: "paperless_create_tag",
-    label: "Create paperless-ngx tag",
-    description:
-      "Create a new tag. Check paperless_list_tags first to avoid creating a near-duplicate of an existing one.",
-    endpoint: "/api/tags/",
-  });
 }

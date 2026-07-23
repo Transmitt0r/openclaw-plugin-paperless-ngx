@@ -9,20 +9,13 @@ import { resolveSecretRefValues } from "openclaw/plugin-sdk/secret-ref-runtime";
 import { Type } from "typebox";
 import { createPaperlessClient, type PaperlessClientHandle } from "./client.js";
 import {
-  createGetDocumentRangeTool,
   createGetDocumentTool,
-  createGrepDocumentTool,
-  createListDocumentsTool,
+  createReadDocumentTool,
+  createSearchDocumentContentTool,
+  createSearchDocumentsTool,
   createUpdateDocumentTool,
 } from "./tools/documents.js";
-import {
-  createCreateCorrespondentTool,
-  createCreateDocumentTypeTool,
-  createCreateTagTool,
-  createListCorrespondentsTool,
-  createListDocumentTypesTool,
-  createListTagsTool,
-} from "./tools/taxonomy.js";
+import { createCreateTaxonomyTermTool, createListTaxonomyTool } from "./tools/taxonomy.js";
 
 // Manifest-facing schema: apiToken accepts a plain string OR a SecretRef
 // object (e.g. `openclaw config set ... --ref-provider default --ref-source
@@ -71,7 +64,8 @@ function createClientHandle(api: OpenClawPluginApi): Promise<PaperlessClientHand
 const entry: OpenClawPluginDefinition = definePluginEntry({
   id: "paperless-ngx",
   name: "paperless-ngx",
-  description: "Tools for reading and updating documents in a paperless-ngx instance.",
+  description:
+    "Tools for retrieving (search, read, pattern-search) and updating documents in a paperless-ngx instance.",
   // TypeBox schemas are structurally JSON Schema but don't carry a string
   // index signature, which is all JsonSchemaObject adds on top of TSchema.
   configSchema: buildJsonPluginConfigSchema(
@@ -80,17 +74,13 @@ const entry: OpenClawPluginDefinition = definePluginEntry({
   register(api) {
     const handle = createClientHandle(api);
 
-    api.registerTool(createListDocumentsTool(handle));
+    api.registerTool(createSearchDocumentsTool(handle));
     api.registerTool(createGetDocumentTool(handle));
+    api.registerTool(createReadDocumentTool(handle));
+    api.registerTool(createSearchDocumentContentTool(handle));
     api.registerTool(createUpdateDocumentTool(handle));
-    api.registerTool(createGrepDocumentTool(handle));
-    api.registerTool(createGetDocumentRangeTool(handle));
-    api.registerTool(createListTagsTool(handle));
-    api.registerTool(createCreateTagTool(handle));
-    api.registerTool(createListCorrespondentsTool(handle));
-    api.registerTool(createCreateCorrespondentTool(handle));
-    api.registerTool(createListDocumentTypesTool(handle));
-    api.registerTool(createCreateDocumentTypeTool(handle));
+    api.registerTool(createListTaxonomyTool(handle));
+    api.registerTool(createCreateTaxonomyTermTool(handle));
   },
 });
 

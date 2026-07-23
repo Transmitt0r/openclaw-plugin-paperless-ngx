@@ -11,19 +11,19 @@ Use the paperless-ngx plugin's tools for everything — never make raw HTTP call
 
 ## Pre-flight (every run)
 
-1. `paperless_list_tags` (page_size=100) — find the inbox tag(s): look for `is_inbox_tag: true` on tag objects. Fallback: a tag literally named "inbox".
-2. `paperless_list_document_types` (page_size=100)
-3. `paperless_list_correspondents` (page_size=100)
+1. `paperless_list_taxonomy(kind: "tag", page_size: 100)` — find the inbox tag(s): look for `is_inbox_tag: true` on tag objects. Fallback: a tag literally named "inbox".
+2. `paperless_list_taxonomy(kind: "document_type", page_size: 100)`
+3. `paperless_list_taxonomy(kind: "correspondent", page_size: 100)`
 
 ## Fetch inbox docs
 
-1. `paperless_list_documents` with `tag_id=<inbox tag id from pre-flight>` to find inbox documents (id/title/metadata only — list never returns OCR content). Cap at 10 docs/run to keep response time reasonable.
+1. `paperless_search_documents` with `tag_id=<inbox tag id from pre-flight>` to find inbox documents (id/title/metadata only — never returns OCR content). Cap at 10 docs/run to keep response time reasonable.
 2. If 0 inbox docs → report "Inbox clear" and stop.
-3. For each inbox document, `paperless_get_document(id, include_content: true)` to read its OCR text for classification. Content is capped at the first 500 lines per call — if the response has `content_truncated: true` and the detail you need (e.g. the actual date) might be past the cutoff, follow up with `paperless_get_document_range` (page past line `content_total_lines`' cutoff using `start_line`) or `paperless_grep_document` for one specific detail. Don't re-fetch a document you've already read.
+3. For each inbox document, `paperless_read_document(id, end_line: 500)` to read its OCR text for classification (`paperless_get_document` never returns full content -- only a single-term excerpt via `excerpt_search`, which isn't enough to classify a document you haven't read yet). If `total_lines` in the response is greater than 500, the detail you need (e.g. the actual date) might be past the cutoff -- follow up with another `paperless_read_document` call (`start_line: 501`, etc.) or `paperless_search_document_content` for one specific detail. Don't re-fetch a document you've already read.
 
 ## Per document, decide
 
-**Correspondent**: best semantic match against the existing list. Strip common legal-entity suffixes (Inc., LLC, Ltd., GmbH, AG, e.V., Co. KG, S.A., etc.) before comparing. Brand name vs. legal entity name. No match → create one with `paperless_create_correspondent` (`name` required). Never create a near-duplicate of an existing one.
+**Correspondent**: best semantic match against the existing list. Strip common legal-entity suffixes (Inc., LLC, Ltd., GmbH, AG, e.V., Co. KG, S.A., etc.) before comparing. Brand name vs. legal entity name. No match → create one with `paperless_create_taxonomy_term(kind: "correspondent", name)`. Never create a near-duplicate of an existing one.
 
 **Document type**: best fit from existing types only. When no existing type is a genuine fit, leave unset and flag it. Never create a new type.
 

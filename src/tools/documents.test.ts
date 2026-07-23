@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPaperlessClient } from "../client.js";
 import {
-  createGetDocumentRangeTool,
   createGetDocumentTool,
-  createGrepDocumentTool,
-  createListDocumentsTool,
+  createReadDocumentTool,
+  createSearchDocumentContentTool,
+  createSearchDocumentsTool,
   createUpdateDocumentTool,
 } from "./documents.js";
 
@@ -89,12 +89,12 @@ const FILLER_B = "B".repeat(300);
 const MARKER = "INVOICE-2024-0042";
 const SAMPLE_CONTENT = `${FILLER_A} ${MARKER} ${FILLER_B}`;
 
-describe("paperless_list_documents content policy", () => {
+describe("paperless_search_documents content policy", () => {
   it("omits content by default when no search/query is given", async () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     const result = await tool.execute("call-1", {});
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content).toBeUndefined();
@@ -103,14 +103,15 @@ describe("paperless_list_documents content policy", () => {
   });
 
   it("never returns content, even if `fields` explicitly lists it", async () => {
-    // list_documents has no include_content option at all -- the client-side
-    // content policy strips `content` from every result regardless of what
-    // `fields` asked the API for, so there's no way to get full text back
-    // from a list call. Use paperless_get_document/grep/range instead.
+    // search_documents has no way to request full content at all -- the
+    // client-side content policy strips `content` from every result
+    // regardless of what `fields` asked the API for, so there's no way to
+    // get full text back from a search call. Use
+    // paperless_get_document/read_document/search_document_content instead.
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     const result = await tool.execute("call-1", { fields: ["id", "title", "content"] });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content).toBeUndefined();
@@ -120,7 +121,7 @@ describe("paperless_list_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     const result = await tool.execute("call-1", { search: MARKER });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content).toBeUndefined();
@@ -133,7 +134,7 @@ describe("paperless_list_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     const result = await tool.execute("call-1", { query: `content:"${MARKER}" AND type:Invoice` });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content_snippet as string).toContain(MARKER);
@@ -143,7 +144,7 @@ describe("paperless_list_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     const result = await tool.execute("call-1", { search: "totally-absent-term" });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     expect(doc.content).toBeUndefined();
@@ -156,7 +157,7 @@ describe("paperless_list_documents content policy", () => {
     const handle = setup([
       documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
     ]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     // "INVOI*42" -- the literal wildcard would never match OCR text, but the
     // "INVOI" fragment (before the `*`) is a real substring of MARKER.
     const result = await tool.execute("call-1", { query: "INVOI*42" });
@@ -173,7 +174,7 @@ describe("paperless_list_documents content policy", () => {
     const fillerLen = 159 - MARKER.length;
     const content = `${MARKER}${"x".repeat(fillerLen)}${emoji}${"y".repeat(50)}`;
     const handle = setup([documentsListRoute([{ id: 1, title: "Doc 1", content, tags: [] }])]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     const result = await tool.execute("call-1", { search: MARKER });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     const snippet = doc.content_snippet as string;
@@ -187,11 +188,22 @@ describe("paperless_list_documents content policy", () => {
     const fillerLen = 319;
     const content = `${"x".repeat(fillerLen)}${emoji}${"y".repeat(50)}`;
     const handle = setup([documentsListRoute([{ id: 1, title: "Doc 1", content, tags: [] }])]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     const result = await tool.execute("call-1", { search: "absent-term" });
     const doc = (result.details as { results: Record<string, unknown>[] }).results[0];
     const snippet = doc.content_snippet as string;
     expect(snippet).toContain(emoji);
+  });
+
+  it("returns lexical results unchanged (semantic search backend is a stub for now)", async () => {
+    const handle = setup([
+      documentsListRoute([{ id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] }]),
+    ]);
+    const tool = createSearchDocumentsTool(handle);
+    const result = await tool.execute("call-1", { search: MARKER });
+    const results = (result.details as { results: Record<string, unknown>[] }).results;
+    expect(results).toHaveLength(1);
+    expect(results[0]?.id).toBe(1);
   });
 });
 
@@ -207,85 +219,53 @@ describe("paperless_get_document content policy", () => {
     expect(doc.content_snippet).toBeUndefined();
   });
 
-  it("includes content when include_content is true", async () => {
+  it("never returns raw content, even if `fields` lists it, without excerpt_search", async () => {
     const handle = setup([
       documentGetRoute({ 1: { id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] } }),
     ]);
     const tool = createGetDocumentTool(handle);
-    const result = await tool.execute("call-1", { id: 1, include_content: true });
+    const result = await tool.execute("call-1", { id: 1, fields: ["id", "title", "content"] });
     const doc = result.details as Record<string, unknown>;
-    expect(doc.content).toBe(SAMPLE_CONTENT);
+    expect(doc.content).toBeUndefined();
   });
 
-  it("still returns content when include_content is true and fields omits it", async () => {
-    // Regression test: `fields` is forwarded to the API as a server-side
-    // sparse fieldset, so a `fields` list that omits "content" would
-    // otherwise silently starve `include_content: true` of any content to
-    // return, even though the fixture below has it.
+  it("returns a content_snippet around excerpt_search when given", async () => {
     const handle = setup([
       documentGetRoute({ 1: { id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] } }),
     ]);
     const tool = createGetDocumentTool(handle);
-    const result = await tool.execute("call-1", {
-      id: 1,
-      fields: ["id", "title"],
-      include_content: true,
-    });
+    const result = await tool.execute("call-1", { id: 1, excerpt_search: MARKER });
     const doc = result.details as Record<string, unknown>;
-    expect(doc.content).toBe(SAMPLE_CONTENT);
-  });
-
-  it("does not truncate content at or under the line cap", async () => {
-    const shortContent = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}`).join("\n");
-    const handle = setup([
-      documentGetRoute({ 1: { id: 1, title: "Doc 1", content: shortContent } }),
-    ]);
-    const tool = createGetDocumentTool(handle);
-    const result = await tool.execute("call-1", { id: 1, include_content: true });
-    const doc = result.details as Record<string, unknown>;
-    expect(doc.content).toBe(shortContent);
-    expect(doc.content_truncated).toBeUndefined();
-    expect(doc.content_total_lines).toBeUndefined();
-  });
-
-  it("caps content at 500 lines and reports content_truncated/content_total_lines", async () => {
-    const longContent = Array.from({ length: 600 }, (_, i) => `Line ${i + 1}`).join("\n");
-    const handle = setup([
-      documentGetRoute({ 1: { id: 1, title: "Doc 1", content: longContent } }),
-    ]);
-    const tool = createGetDocumentTool(handle);
-    const result = await tool.execute("call-1", { id: 1, include_content: true });
-    const doc = result.details as Record<string, unknown>;
-    expect((doc.content as string).split("\n")).toHaveLength(500);
-    expect(doc.content_truncated).toBe(true);
-    expect(doc.content_total_lines).toBe(600);
+    expect(doc.content).toBeUndefined();
+    expect(typeof doc.content_snippet).toBe("string");
+    expect(doc.content_snippet as string).toContain(MARKER);
   });
 });
 
 describe("outgoing request serialization", () => {
-  it("list_documents sends `search` in the request query", async () => {
+  it("search_documents sends `search` in the request query", async () => {
     const { handle, fetchMock } = setupWithSpy([documentsListRoute([])]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     await tool.execute("call-1", { search: "invoice" });
     expect(lastRequestUrl(fetchMock).searchParams.get("search")).toBe("invoice");
   });
 
-  it("list_documents sends `fields` as given", async () => {
+  it("search_documents sends `fields` as given", async () => {
     const { handle, fetchMock } = setupWithSpy([
       documentsListRoute([{ id: 1, title: "Doc 1", tags: [] }]),
     ]);
-    const tool = createListDocumentsTool(handle);
+    const tool = createSearchDocumentsTool(handle);
     await tool.execute("call-1", { fields: ["id", "title"] });
     const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
     expect(fields?.split(",")).toEqual(["id", "title"]);
   });
 
-  it("get_document adds `content` to `fields` in the request when include_content is true", async () => {
+  it("get_document adds `content` to `fields` in the request when excerpt_search is given", async () => {
     const { handle, fetchMock } = setupWithSpy([
       documentGetRoute({ 1: { id: 1, title: "Doc 1", content: SAMPLE_CONTENT, tags: [] } }),
     ]);
     const tool = createGetDocumentTool(handle);
-    await tool.execute("call-1", { id: 1, fields: ["id", "title"], include_content: true });
+    await tool.execute("call-1", { id: 1, fields: ["id", "title"], excerpt_search: MARKER });
     const fields = lastRequestUrl(fetchMock).searchParams.get("fields");
     expect(fields?.split(",")).toEqual(expect.arrayContaining(["id", "title", "content"]));
   });
@@ -300,10 +280,10 @@ const GREP_CONTENT = [
   "End of document",
 ].join("\n");
 
-describe("paperless_grep_document", () => {
+describe("paperless_search_document_content", () => {
   it("returns matching lines with surrounding context", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const result = await tool.execute("call-1", { id: 1, pattern: "Policy Number" });
     const details = result.details as {
       total_lines: number;
@@ -326,7 +306,7 @@ describe("paperless_grep_document", () => {
 
   it("caps returned matches at max_matches and reports truncated", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const result = await tool.execute("call-1", {
       id: 1,
       pattern: "Policy Number",
@@ -344,7 +324,7 @@ describe("paperless_grep_document", () => {
 
   it("is case-insensitive by default and honors ignore_case: false", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
 
     const caseInsensitive = await tool.execute("call-1", { id: 1, pattern: "policy number" });
     expect((caseInsensitive.details as { total_matches: number }).total_matches).toBe(2);
@@ -359,7 +339,7 @@ describe("paperless_grep_document", () => {
 
   it("throws a clear error on an invalid regex pattern", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     await expect(tool.execute("call-1", { id: 1, pattern: "(" })).rejects.toThrow(
       /invalid pattern/,
     );
@@ -367,7 +347,7 @@ describe("paperless_grep_document", () => {
 
   it("rejects patterns with too many repetition operators (ReDoS guard)", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const pathological = "a+".repeat(20);
     await expect(tool.execute("call-1", { id: 1, pattern: pathological })).rejects.toThrow(
       /too many repetition operators/,
@@ -376,7 +356,7 @@ describe("paperless_grep_document", () => {
 
   it("rejects patterns longer than the length cap", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const tooLong = "a".repeat(501);
     await expect(tool.execute("call-1", { id: 1, pattern: tooLong })).rejects.toThrow(
       /longer than 500 characters/,
@@ -386,7 +366,7 @@ describe("paperless_grep_document", () => {
   it("normalizes CRLF line endings before matching", async () => {
     const crlfContent = GREP_CONTENT.split("\n").join("\r\n");
     const handle = setup([documentGetRoute({ 1: { id: 1, content: crlfContent } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const result = await tool.execute("call-1", { id: 1, pattern: "Policy Number" });
     const details = result.details as {
       total_matches: number;
@@ -400,7 +380,7 @@ describe("paperless_grep_document", () => {
 
   it("reports content_status: null and skips the search when content is missing", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: null } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const result = await tool.execute("call-1", { id: 1, pattern: "anything" });
     const details = result.details as {
       total_lines: number;
@@ -416,14 +396,14 @@ describe("paperless_grep_document", () => {
 
   it("reports content_status: present when a match is found", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const result = await tool.execute("call-1", { id: 1, pattern: "Policy Number" });
     expect((result.details as { content_status: string }).content_status).toBe("present");
   });
 
   it("reports content_status: empty when content is an empty string", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: "" } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const result = await tool.execute("call-1", { id: 1, pattern: "anything" });
     const details = result.details as { content_status: string; total_matches: number };
     expect(details.content_status).toBe("empty");
@@ -432,7 +412,7 @@ describe("paperless_grep_document", () => {
 
   it("returns zero matches (not an error) when the pattern matches nothing", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: GREP_CONTENT } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const result = await tool.execute("call-1", { id: 1, pattern: "no-such-term-xyz" });
     const details = result.details as {
       content_status: string;
@@ -449,7 +429,7 @@ describe("paperless_grep_document", () => {
   it("handles a single very long line with no newlines", async () => {
     const longLine = `prefix ${"word ".repeat(2000)}needle ${"word ".repeat(2000)}suffix`;
     const handle = setup([documentGetRoute({ 1: { id: 1, content: longLine } })]);
-    const tool = createGrepDocumentTool(handle);
+    const tool = createSearchDocumentContentTool(handle);
     const result = await tool.execute("call-1", { id: 1, pattern: "needle" });
     const details = result.details as {
       total_lines: number;
@@ -463,12 +443,12 @@ describe("paperless_grep_document", () => {
   });
 });
 
-describe("paperless_get_document_range", () => {
+describe("paperless_read_document", () => {
   const rangeContent = Array.from({ length: 10 }, (_, i) => `Line ${i + 1}`).join("\n");
 
   it("defaults to the start of the document", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: rangeContent } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     const result = await tool.execute("call-1", { id: 1 });
     const details = result.details as {
       start_line: number;
@@ -484,7 +464,7 @@ describe("paperless_get_document_range", () => {
 
   it("returns an explicit line range", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: rangeContent } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     const result = await tool.execute("call-1", { id: 1, start_line: 3, end_line: 5 });
     const details = result.details as { start_line: number; end_line: number; content: string };
     expect(details.start_line).toBe(3);
@@ -494,7 +474,7 @@ describe("paperless_get_document_range", () => {
 
   it("returns an empty range past the end of the document", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: rangeContent } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     const result = await tool.execute("call-1", { id: 1, start_line: 50 });
     const details = result.details as {
       start_line: number;
@@ -511,7 +491,7 @@ describe("paperless_get_document_range", () => {
   it("caps the requested span at 500 lines", async () => {
     const longContent = Array.from({ length: 600 }, (_, i) => `Line ${i + 1}`).join("\n");
     const handle = setup([documentGetRoute({ 1: { id: 1, content: longContent } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     const result = await tool.execute("call-1", { id: 1, start_line: 1, end_line: 1000 });
     const details = result.details as { start_line: number; end_line: number; content: string };
     expect(details.start_line).toBe(1);
@@ -519,10 +499,24 @@ describe("paperless_get_document_range", () => {
     expect(details.content.split("\n")).toHaveLength(500);
   });
 
+  it("caps a default (no explicit range) read at 500 lines on a long document", async () => {
+    // This is the case that used to be paperless_get_document(include_content: true) --
+    // just calling with an id and nothing else should behave the same as
+    // reading from the start, bounded the same way.
+    const longContent = Array.from({ length: 600 }, (_, i) => `Line ${i + 1}`).join("\n");
+    const handle = setup([documentGetRoute({ 1: { id: 1, content: longContent } })]);
+    const tool = createReadDocumentTool(handle);
+    const result = await tool.execute("call-1", { id: 1 });
+    const details = result.details as { start_line: number; end_line: number; total_lines: number };
+    expect(details.start_line).toBe(1);
+    expect(details.end_line).toBe(200);
+    expect(details.total_lines).toBe(600);
+  });
+
   it("normalizes CRLF line endings before slicing", async () => {
     const crlfContent = rangeContent.split("\n").join("\r\n");
     const handle = setup([documentGetRoute({ 1: { id: 1, content: crlfContent } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     const result = await tool.execute("call-1", { id: 1, start_line: 3, end_line: 5 });
     const details = result.details as { content: string };
     expect(details.content).toBe("Line 3\nLine 4\nLine 5");
@@ -531,7 +525,7 @@ describe("paperless_get_document_range", () => {
 
   it("reports content_status: null and returns empty content when content is missing", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: null } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     const result = await tool.execute("call-1", { id: 1 });
     const details = result.details as {
       total_lines: number;
@@ -545,14 +539,14 @@ describe("paperless_get_document_range", () => {
 
   it("reports content_status: present for a normal range", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: rangeContent } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     const result = await tool.execute("call-1", { id: 1 });
     expect((result.details as { content_status: string }).content_status).toBe("present");
   });
 
   it("throws a clear error on an inverted range (end_line before start_line)", async () => {
     const handle = setup([documentGetRoute({ 1: { id: 1, content: rangeContent } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     await expect(tool.execute("call-1", { id: 1, start_line: 10, end_line: 2 })).rejects.toThrow(
       /end_line \(2\) is before start_line \(10\)/,
     );
@@ -561,7 +555,7 @@ describe("paperless_get_document_range", () => {
   it("handles a single very long line with no newlines", async () => {
     const longLine = "word ".repeat(5000).trim();
     const handle = setup([documentGetRoute({ 1: { id: 1, content: longLine } })]);
-    const tool = createGetDocumentRangeTool(handle);
+    const tool = createReadDocumentTool(handle);
     const result = await tool.execute("call-1", { id: 1 });
     const details = result.details as {
       start_line: number;

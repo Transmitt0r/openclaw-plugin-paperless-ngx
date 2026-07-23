@@ -2,20 +2,13 @@ import { describe, expect, it } from "vitest";
 import manifest from "../openclaw.plugin.json" with { type: "json" };
 import { createPaperlessClient } from "./client.js";
 import {
-  createGetDocumentRangeTool,
   createGetDocumentTool,
-  createGrepDocumentTool,
-  createListDocumentsTool,
+  createReadDocumentTool,
+  createSearchDocumentContentTool,
+  createSearchDocumentsTool,
   createUpdateDocumentTool,
 } from "./tools/documents.js";
-import {
-  createCreateCorrespondentTool,
-  createCreateDocumentTypeTool,
-  createCreateTagTool,
-  createListCorrespondentsTool,
-  createListDocumentTypesTool,
-  createListTagsTool,
-} from "./tools/taxonomy.js";
+import { createCreateTaxonomyTermTool, createListTaxonomyTool } from "./tools/taxonomy.js";
 
 // Guards against the class of bug fixed here: index.ts registered
 // paperless_grep_document/paperless_get_document_range via api.registerTool(),
@@ -30,17 +23,13 @@ describe("openclaw.plugin.json contracts.tools", () => {
       baseUrl: "https://paperless.example.com",
     });
     const implementedNames = [
-      createListDocumentsTool(handle),
+      createSearchDocumentsTool(handle),
       createGetDocumentTool(handle),
+      createReadDocumentTool(handle),
+      createSearchDocumentContentTool(handle),
       createUpdateDocumentTool(handle),
-      createGrepDocumentTool(handle),
-      createGetDocumentRangeTool(handle),
-      createListTagsTool(handle),
-      createCreateTagTool(handle),
-      createListCorrespondentsTool(handle),
-      createCreateCorrespondentTool(handle),
-      createListDocumentTypesTool(handle),
-      createCreateDocumentTypeTool(handle),
+      createListTaxonomyTool(handle),
+      createCreateTaxonomyTermTool(handle),
     ].map((tool) => tool.name);
 
     expect(new Set(manifest.contracts.tools)).toEqual(new Set(implementedNames));
