@@ -26,3 +26,29 @@ jobs:
       - run: pnpm run lint
 
       - run: pnpm run test
+
+  tag-release:
+    needs: build-lint-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # package.json version bumps should ship themselves: tag it here so the
+      # push triggers publish.yml, instead of relying on someone remembering
+      # to push a matching tag by hand after merging the bump.
+      - name: Tag release if package.json version is new
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if git rev-parse "$version" >/dev/null 2>&1; then
+            echo "Tag $version already exists, nothing to do"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$version" -m "$version"
+          git push origin "$version"
