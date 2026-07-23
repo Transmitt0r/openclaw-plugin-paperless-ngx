@@ -33,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,6 +43,8 @@ jobs:
       # push triggers publish.yml, instead of relying on someone remembering
       # to push a matching tag by hand after merging the bump.
       - name: Tag release if package.json version is new
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="v$(node -p "require('./package.json').version")"
           if git rev-parse "$version" >/dev/null 2>&1; then
@@ -52,3 +55,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$version" -m "$version"
           git push origin "$version"
+          # A tag pushed with the default GITHUB_TOKEN doesn't trigger other
+          # workflows (GitHub suppresses that to prevent recursive runs);
+          # workflow_dispatch is explicitly exempted from that rule, so kick
+          # off the publish workflow directly instead of relying on its
+          # `push: tags` trigger.
+          gh workflow run publish.yml --ref "$version"
