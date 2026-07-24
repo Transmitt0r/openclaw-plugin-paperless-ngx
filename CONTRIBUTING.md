@@ -11,6 +11,12 @@ pnpm run test
 
 Node version is pinned in `.nvmrc`.
 
+`node-llama-cpp` (the semantic-search embedding runtime; see `src/semantic/embedding-provider.ts`)
+runs a `postinstall` step that fetches a prebuilt native binary for your platform (falling back to a
+local `cmake` build only if no prebuilt is available). pnpm blocks dependency build scripts by
+default; this repo's `pnpm-workspace.yaml` pre-approves it via `allowBuilds`, so a plain `pnpm install`
+is enough -- no extra flags needed.
+
 ### Regenerating API types
 
 `src/generated/paperless-schema.d.ts` is generated from your paperless-ngx instance's live OpenAPI
