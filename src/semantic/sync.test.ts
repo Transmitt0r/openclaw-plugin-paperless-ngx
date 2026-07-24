@@ -50,7 +50,7 @@ async function memoryStore(identity: IndexIdentity) {
 }
 
 const IDENTITY: IndexIdentity = {
-  providerId: "local",
+  providerId: "node-llama-cpp",
   model: "test-model",
   dimensions: 4,
   chunkTokens: 400,

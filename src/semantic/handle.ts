@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import type { OpenClawPluginApi, PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
 import type { PaperlessClientHandle } from "../client.js";
-import { EmbeddingProviderHandle } from "./embedding-provider.js";
+import { EMBEDDING_PROVIDER_ID, EmbeddingProviderHandle } from "./embedding-provider.js";
 import { searchSemantic } from "./search.js";
 import { SemanticIndexStore } from "./store.js";
 import { runIncrementalSync } from "./sync.js";
@@ -12,15 +12,22 @@ import { DEFAULT_SEMANTIC_SEARCH_CONFIG, identitiesMatch } from "./types.js";
 export type SemanticSearchPluginConfig = {
   enabled?: boolean;
   indexPath?: string;
+  // node-llama-cpp is fully bundled by this plugin -- these only tune how
+  // it resolves/runs the model, not which provider/registry to use.
+  embedding?: {
+    modelPath?: string;
+    modelCacheDir?: string;
+    contextSize?: number;
+  };
 };
 
 export type SemanticSearchHandle = {
   // False whenever the semantic backend couldn't come up for any reason
   // (disabled by config, Node runtime without node:sqlite, sqlite-vec
-  // failed to load, no embedding provider registered, ...). `search`
-  // still exists and is always safe to call -- it just always resolves to
-  // `[]`, which is exactly the pre-existing stub behavior
-  // paperless_search_documents already tolerates.
+  // failed to load, the bundled node-llama-cpp model failed to
+  // resolve/load, ...). `search` still exists and is always safe to call
+  // -- it just always resolves to `[]`, which is exactly the pre-existing
+  // stub behavior paperless_search_documents already tolerates.
   available: boolean;
   search: (searchTerm: string | undefined, limit: number) => Promise<SemanticMatch[]>;
   dispose: () => Promise<void>;
@@ -34,9 +41,7 @@ function unavailableHandle(): SemanticSearchHandle {
   };
 }
 
-function resolveConfig(raw: SemanticSearchPluginConfig | undefined): SemanticSearchConfig & {
-  enabled: boolean;
-} {
+function resolveConfig(raw: SemanticSearchPluginConfig | undefined): SemanticSearchConfig {
   const indexPath =
     raw?.indexPath ??
     path.join(os.homedir(), ".openclaw", "plugins", "paperless-ngx", "semantic-index.db");
@@ -44,12 +49,15 @@ function resolveConfig(raw: SemanticSearchPluginConfig | undefined): SemanticSea
     ...DEFAULT_SEMANTIC_SEARCH_CONFIG,
     enabled: raw?.enabled ?? DEFAULT_SEMANTIC_SEARCH_CONFIG.enabled,
     indexPath,
+    model: raw?.embedding?.modelPath ?? DEFAULT_SEMANTIC_SEARCH_CONFIG.model,
+    modelCacheDir: raw?.embedding?.modelCacheDir,
+    contextSize: raw?.embedding?.contextSize ?? DEFAULT_SEMANTIC_SEARCH_CONFIG.contextSize,
   };
 }
 
 function candidateIdentity(config: SemanticSearchConfig): IndexIdentity {
   return {
-    providerId: config.providerId,
+    providerId: EMBEDDING_PROVIDER_ID,
     model: config.model,
     dimensions: config.dimensions,
     chunkTokens: config.chunkTokens,
@@ -109,11 +117,11 @@ async function setup(
   const { store } = opened;
 
   const embeddingProvider = new EmbeddingProviderHandle({
-    config: api.config,
-    providerId: config.providerId,
     model: config.model,
     dimensions: config.dimensions,
     idleUnloadMs: config.idleUnloadMs,
+    modelCacheDir: config.modelCacheDir,
+    contextSize: config.contextSize,
     logger,
   });
 

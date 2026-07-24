@@ -44,7 +44,12 @@ export type ChunkHit = {
 // what's stored on disk on every startup; any mismatch means the stored
 // vectors were produced by a different model/dimensionality/chunking
 // scheme and can't be mixed with new ones, so the index is wiped and
-// rebuilt from scratch instead.
+// rebuilt from scratch instead. `providerId` is currently always
+// EMBEDDING_PROVIDER_ID from embedding-provider.ts (there's only one
+// embedding runtime, node-llama-cpp, bundled directly by this plugin) --
+// kept as its own field rather than folded away so a future change of
+// embedding runtime is still recognized as an identity change and
+// triggers a rebuild, the same as a model/dimensions change does.
 export type IndexIdentity = {
   providerId: string;
   model: string;
@@ -68,12 +73,23 @@ export function identitiesMatch(a: IndexIdentity, b: IndexIdentity): boolean {
 // envelope the architecture merely has to not fall over under.
 export type SemanticSearchConfig = {
   enabled: boolean;
-  providerId: string;
+  // A node-llama-cpp model reference -- an `hf:` URI (resolved and cached
+  // by node-llama-cpp itself) or a local .gguf file path. There's no
+  // registry provider id anymore: this plugin bundles node-llama-cpp
+  // directly (see embedding-provider.ts) rather than resolving a "local"
+  // embedding provider through any shared host registry.
   model: string;
   dimensions: number;
   chunkTokens: number;
   chunkOverlap: number;
   indexPath: string;
+  // Where node-llama-cpp caches/resolves downloaded model files. Undefined
+  // defers to node-llama-cpp's own default cache directory.
+  modelCacheDir?: string;
+  // llama.cpp context size for the embedding context. node-llama-cpp's own
+  // default (4096) is plenty for chunk-sized text; exposed for tuning on
+  // very constrained hardware.
+  contextSize: number;
   // How long the embedding model is allowed to sit warm in memory (~400-500MB
   // RSS for EmbeddingGemma-300m) after its last use before being unloaded.
   idleUnloadMs: number;
@@ -89,18 +105,22 @@ export type SemanticSearchConfig = {
   queryTimeoutMs: number;
 };
 
-export const DEFAULT_SEMANTIC_SEARCH_CONFIG: Omit<SemanticSearchConfig, "indexPath"> = {
+export const DEFAULT_SEMANTIC_SEARCH_CONFIG: Omit<
+  SemanticSearchConfig,
+  "indexPath" | "modelCacheDir"
+> = {
   enabled: true,
-  providerId: "local",
-  // Matches openclaw's own DEFAULT_LOCAL_MODEL (EmbeddingGemma-300m, GGUF,
-  // CPU-only) -- kept as a literal default here (rather than importing the
-  // constant at module load) so this module never has a hard load-time
-  // dependency on the embedding-provider host module; embedding-provider.ts
-  // reconciles the two at resolve time.
+  // EmbeddingGemma-300m, CPU-only GGUF -- multilingual-trained (this
+  // archive is realistically mixed-language) and Matryoshka-trained (cheap
+  // truncation to `dimensions` below), unlike paperless-ngx's own bundled
+  // default (MiniLM-L6-v2: English-only, not MRL-trained). Resolved
+  // straight from this `hf:` URI by node-llama-cpp's own model resolver/
+  // downloader -- see embedding-provider.ts.
   model: "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf",
   dimensions: 256,
   chunkTokens: 400,
   chunkOverlap: 80,
+  contextSize: 4096,
   idleUnloadMs: 5 * 60_000,
   syncIntervalMs: 15 * 60_000,
   maxDocumentsPerSync: 200,

@@ -3,9 +3,16 @@
 # own dependencies -- they get installed locally because pnpm's
 # autoInstallPeers resolves openclaw for local dev/typechecking. esbuild is
 # the one entry that's actually ours, via vite/vitest.
+#
+# node-llama-cpp is also actually ours (a direct dependency, see
+# src/semantic/embedding-provider.ts): its postinstall step fetches a
+# prebuilt native binary for the current platform (falling back to a local
+# cmake build only if no prebuilt exists), which pnpm otherwise blocks by
+# default as an unapproved build script.
 allowBuilds:
   '@google/genai': true
   esbuild: true
+  node-llama-cpp: true
   openclaw: true
   protobufjs: true
   tree-sitter-bash: true

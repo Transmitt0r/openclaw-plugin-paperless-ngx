@@ -67,10 +67,13 @@ There's deliberately no delete tool in this first pass.
 
 `paperless_search_documents` understands meaning, not just keywords — searching "car insurance"
 also finds a document whose text only ever says "Kfz-Haftpflichtversicherung". This happens
-automatically inside the existing `search` param; there's no separate tool or mode to choose. It
-runs entirely locally (a small local embedding model, no external service, no OCR text leaving your
-machine), builds up in the background after install, and fails open to today's keyword-only
-behavior if it can't start for any reason.
+automatically inside the existing `search` param; there's no separate tool or mode to choose. It's
+fully self-contained: this plugin bundles its own small local embedding model and runs it directly
+(no external service, no OCR text leaving your machine, and no other plugin or host config to
+install/touch to make it work). Because of that, installing this plugin pulls in a native module
+with a larger, platform-specific install step (it fetches a prebuilt binary for your machine; there's
+no compiler requirement in the common case). The index builds up in the background after install and
+fails open to today's keyword-only behavior if the embedding model can't start for any reason.
 
 It's on by default. To turn it off or move where its local index file lives:
 

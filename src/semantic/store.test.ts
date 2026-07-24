@@ -14,7 +14,7 @@ async function openMemoryStore(dimensions = 4) {
 }
 
 const IDENTITY: IndexIdentity = {
-  providerId: "local",
+  providerId: "node-llama-cpp",
   model: "test-model",
   dimensions: 4,
   chunkTokens: 400,

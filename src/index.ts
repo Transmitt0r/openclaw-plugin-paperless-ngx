@@ -55,6 +55,34 @@ const configSchema = Type.Object({
             "content, so it never needs its own backup strategy beyond copying this one file.",
         }),
       ),
+      // This plugin bundles its own embedding runtime (node-llama-cpp)
+      // directly -- these only tune how it resolves/runs the model, not
+      // which provider or host subsystem to use.
+      embedding: Type.Optional(
+        Type.Object({
+          modelPath: Type.Optional(
+            Type.String({
+              description:
+                "Embedding model to use: an `hf:` URI (resolved and cached by node-llama-cpp itself) " +
+                "or a local .gguf file path. Defaults to EmbeddingGemma-300m.",
+            }),
+          ),
+          modelCacheDir: Type.Optional(
+            Type.String({
+              description:
+                "Directory node-llama-cpp caches/resolves downloaded model files in. Defaults to " +
+                "node-llama-cpp's own default cache directory.",
+            }),
+          ),
+          contextSize: Type.Optional(
+            Type.Integer({
+              description:
+                "llama.cpp context size for the embedding context. Defaults to 4096 (node-llama-cpp's " +
+                "own default), which is plenty for chunk-sized text.",
+            }),
+          ),
+        }),
+      ),
     }),
   ),
 });

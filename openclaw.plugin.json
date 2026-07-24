@@ -27,6 +27,23 @@
           "indexPath": {
             "type": "string",
             "description": "Filesystem path for the plugin-owned SQLite+sqlite-vec index file. Defaults under ~/.openclaw/plugins/paperless-ngx/. The file is fully rebuildable from paperless-ngx content, so it never needs its own backup strategy beyond copying this one file."
+          },
+          "embedding": {
+            "type": "object",
+            "properties": {
+              "modelPath": {
+                "type": "string",
+                "description": "Embedding model to use: an `hf:` URI (resolved and cached by node-llama-cpp itself) or a local .gguf file path. Defaults to EmbeddingGemma-300m."
+              },
+              "modelCacheDir": {
+                "type": "string",
+                "description": "Directory node-llama-cpp caches/resolves downloaded model files in. Defaults to node-llama-cpp's own default cache directory."
+              },
+              "contextSize": {
+                "type": "integer",
+                "description": "llama.cpp context size for the embedding context. Defaults to 4096 (node-llama-cpp's own default), which is plenty for chunk-sized text."
+              }
+            }
           }
         }
       }

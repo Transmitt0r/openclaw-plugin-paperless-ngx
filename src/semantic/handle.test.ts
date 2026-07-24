@@ -58,9 +58,12 @@ describe("createSemanticSearchHandle", () => {
     );
     // node:sqlite + sqlite-vec are both available in this test environment
     // (verified directly in store.test.ts), so the index itself should
-    // come up even though no embedding provider adapter is registered in
-    // this bare test process -- that failure is scoped to sync/search,
-    // which fail open on their own (see sync.test.ts/search.test.ts).
+    // come up. This never touches node-llama-cpp at all: search(undefined)
+    // no-ops before ever reaching the embedding provider (see
+    // search.test.ts's own no-op-on-empty-term coverage), and no sync pass
+    // is awaited here -- a real embed/load path is intentionally only
+    // exercised through embedding-provider.test.ts's injected fakes, never
+    // by loading a real model in this test suite.
     expect(handle.available).toBe(true);
     expect(await handle.search(undefined, 5)).toEqual([]);
     await handle.dispose();
